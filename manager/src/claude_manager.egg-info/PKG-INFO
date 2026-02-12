@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: claude-manager
+Version: 0.1.0
+Summary: Kitty 终端任务管理器 - 管理多个 Claude Code 和终端进程
+Author: User
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/user/claude-manager
+Keywords: kitty,terminal,task-manager,claude,tui
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Utilities
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: textual>=0.40.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
