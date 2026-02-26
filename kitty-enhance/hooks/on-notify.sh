@@ -21,7 +21,20 @@ TAB_INFO=$(get_tab_info "$KITTY_SOCKET" "$WINDOW_ID")
 TAB_ID="${TAB_INFO%% *}"
 WIN_FOCUSED="${TAB_INFO##* }"
 
-[ "$WIN_FOCUSED" = "1" ] && { debug "window focused, skip"; exit 0; }
+# 聚焦时不设黄色，但清除蓝色（Esc 中断时 Notification 会触发，蓝色已无意义）
+if [ "$WIN_FOCUSED" = "1" ]; then
+    local_sf=$(_state_file "$KITTY_SOCKET" "$TAB_ID")
+    if [ -f "$local_sf" ]; then
+        read -r _cur < "$local_sf"
+        case "$_cur" in blue|blue-paused)
+            debug "window focused, clearing blue state"
+            rm -f "$local_sf"
+            rm -f "/tmp/kitty-tabcache-${WINDOW_ID}"
+        ;; esac
+    fi
+    debug "window focused, skip yellow"
+    exit 0
+fi
 
 # 设置黄色（等待确认，不会覆盖已有的红色）
 set_tab_color "$KITTY_SOCKET" "$TAB_ID" "yellow"
