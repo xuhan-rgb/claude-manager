@@ -66,7 +66,8 @@ for os_win in data:
                 kitty @ --to "$socket" set-tab-color --match "id:$tid" \
                     active_bg=NONE active_fg=NONE \
                     inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
-                rm -f "$sf"
+                # 写 "none" 而非删除，防止残留后台进程误设蓝色
+                echo "none" > "$sf"
             fi
         else
             # 非聚焦 tab：恢复 blue-paused → blue
@@ -167,7 +168,14 @@ ensure_poller() {
             # 没有状态文件则退出
             local has_state=false
             for sf in "${STATE_DIR}"/kitty-tab-"${hash}"-*; do
-                [ -f "$sf" ] && { has_state=true; break; }
+                if [ -f "$sf" ]; then
+                    read -r _v < "$sf"
+                    if [ "$_v" = "none" ]; then
+                        rm -f "$sf"
+                    else
+                        has_state=true; break
+                    fi
+                fi
             done
             if [ "$has_state" = false ]; then
                 debug "poller: no state files, exiting"

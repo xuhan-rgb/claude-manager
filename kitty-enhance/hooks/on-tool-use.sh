@@ -37,11 +37,17 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
     [ -f "$sf" ] && read -r current < "$sf"
     case "$current" in blue|red|yellow) exit 0 ;; esac
 
+    # "none" = 刚被清除的红/黄，不应设蓝色，清理后退出
+    if [ "$current" = "none" ]; then
+        rm -f "$sf" "$_cache"
+        exit 0
+    fi
+
     sleep 0.3
 
     current=""
     [ -f "$sf" ] && read -r current < "$sf"
-    case "$current" in red|yellow) exit 0 ;; esac
+    case "$current" in red|yellow|none) exit 0 ;; esac
 
     set_tab_color "$KITTY_SOCKET" "$TAB_ID" "blue"
     ensure_poller "$KITTY_SOCKET"
