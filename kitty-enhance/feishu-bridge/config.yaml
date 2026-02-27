@@ -1,0 +1,9 @@
+feishu:
+  app_id: ""
+  app_secret: ""
+  user_id: ""
+
+bridge:
+  wait_minutes: 0      # 立即发飞书通知（0=不等待）
+  poll_interval: 1     # 扫描 pending 文件间隔（秒）
+  expire_minutes: 30   # pending 文件过期清理时间

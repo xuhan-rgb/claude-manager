@@ -47,4 +47,7 @@ rm -f "/tmp/kitty-tab-${TAB_ID}-stop"
 # 确保共享 poller 运行
 ensure_poller "$KITTY_SOCKET"
 
+# 清理 feishu-bridge pending 文件（任务已停止，权限弹窗不再需要）
+rm -f "/tmp/feishu-bridge/${WINDOW_ID}.json" 2>/dev/null
+
 exit 0

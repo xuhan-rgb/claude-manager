@@ -55,6 +55,28 @@ tc                      # = tab-reset
 ta                      # = tab-alert
 ```
 
+## 飞书权限桥接（feishu-bridge）
+
+```bash
+# 一键配置（新用户用这个）
+cd kitty-enhance/feishu-bridge && bash setup.sh
+
+# 启动守护进程（前台运行，Ctrl+C 停止）
+cd kitty-enhance/feishu-bridge && python daemon.py
+
+# 查看运行状态和 pending 请求
+python daemon.py status
+
+# 停止守护进程
+python daemon.py stop
+
+# 查看守护进程日志
+tail -f /tmp/feishu-bridge/daemon.log
+
+# 安装依赖
+pip install lark-oapi pyyaml
+```
+
 ## 调试命令
 
 ```bash

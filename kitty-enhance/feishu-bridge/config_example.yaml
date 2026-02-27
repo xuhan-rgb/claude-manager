@@ -1,0 +1,12 @@
+feishu:
+  app_id: ""          # 飞书自建应用 App ID
+  app_secret: ""      # 飞书自建应用 App Secret
+  user_id: ""         # 接收消息的用户 open_id
+
+bridge:
+  wait_minutes: 5     # 等待多久后发飞书通知
+  poll_interval: 2    # 扫描 pending 文件间隔（秒）
+  expire_minutes: 30  # pending 文件过期清理时间
+
+kitty:
+  socket: ""  # 留空自动从 pending 文件获取（推荐），也可手动指定如 unix:@mykitty-PID

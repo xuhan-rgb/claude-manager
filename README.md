@@ -321,6 +321,105 @@ kitty @ ls
 
 ---
 
+### 飞书权限桥接（Feishu Permission Bridge）
+
+Claude Code 等待权限确认时，如果你不在终端前，任务会一直卡住。飞书桥接解决这个问题：
+
+```
+权限弹窗出现 → Hook 记录 pending → 等待 5 分钟 → 飞书卡片通知
+                                                       ↓
+                                              你回复 y / n
+                                                       ↓
+                                         守护进程按键到终端 → 任务继续
+```
+
+#### 前置条件
+
+1. Kitty 终端（已启用 `allow_remote_control`）
+2. Python 3.10+ 与 `lark-oapi` 依赖
+3. 飞书自建应用（见下方配置步骤）
+
+#### 飞书应用配置
+
+1. **创建应用**：登录 [飞书开放平台](https://open.feishu.cn/app) → 创建自建应用
+
+2. **获取凭据**：进入应用 → 左侧「凭证与基础信息」→ 记录 **App ID** 和 **App Secret**
+
+3. **开启机器人**：左侧「应用能力」→「添加应用能力」→ 开启「机器人」
+
+4. **添加权限**：左侧「权限管理」→ 搜索并开通：
+   - `im:message` — 读取消息
+   - `im:message:send_as_bot` — 以机器人身份发消息
+
+5. **配置事件订阅**：左侧「事件与回调」→ 事件配置：
+   - 订阅方式选「**长连接**」
+   - 添加事件 `im.message.receive_v1`（接收消息）
+   - **注意**：保存时会提示「应用未建立长连接」，需要先运行一次守护进程建立连接，然后再回来保存
+
+6. **发布应用**：顶部「创建版本」→ 填写版本号 → 申请发布上线
+
+7. **获取 open_id**：应用上线后，在飞书中搜索你的机器人 → 发一条消息 → 守护进程日志会打印你的 `open_id`（格式：`ou_xxxxxxxx`）
+
+#### 安装与配置
+
+```bash
+# 安装 Python 依赖
+pip install lark-oapi pyyaml
+
+# 编辑配置文件，填入飞书凭据
+vim kitty-enhance/feishu-bridge/config.yaml
+```
+
+配置文件内容：
+```yaml
+feishu:
+  app_id: "cli_xxxxx"        # 飞书自建应用 App ID
+  app_secret: "xxxxx"        # 飞书自建应用 App Secret
+  user_id: "ou_xxxxx"        # 接收消息的用户 open_id
+
+bridge:
+  wait_minutes: 5             # 等待多久后发飞书通知
+  poll_interval: 5            # 扫描间隔（秒）
+  expire_minutes: 30          # pending 过期清理时间
+```
+
+#### 使用
+
+```bash
+# 启动守护进程
+cd kitty-enhance/feishu-bridge
+python daemon.py
+
+# 查看状态
+python daemon.py status
+
+# 停止
+python daemon.py stop
+```
+
+启动后，当 Claude Code 权限弹窗超过 5 分钟无人操作，你会在飞书收到卡片通知，直接回复 **y**（允许）或 **n**（拒绝），终端自动继续。
+
+#### 新用户接入（一键配置）
+
+飞书应用只需创建一次，团队共用同一个 App ID / App Secret。新用户接入只需：
+
+```bash
+cd kitty-enhance/feishu-bridge
+bash setup.sh
+```
+
+脚本会自动：检查依赖 → 填入共享凭据 → 连接飞书获取个人 open_id → 生成 config.yaml → 安装 Hook。
+
+新用户需要的信息（问管理员要）：
+- **App ID** 和 **App Secret** — 团队共用
+- 飞书中搜索机器人名字，发一条消息 — 脚本自动获取 open_id
+
+#### 首次建立长连接
+
+飞书后台保存「长连接」配置时要求客户端已连接。首次配置时先启动守护进程（`python daemon.py`），再去飞书后台点「保存」。
+
+---
+
 ### Tmux 配置
 
 配置文件：`config/tmux/`
@@ -599,7 +698,15 @@ tail -f ~/.config/claude-manager/logs/app.log
 │   │   ├── on-tool-use.sh      # 工具调用时 Tab 变蓝
 │   │   ├── on-stop.sh          # 完成时 Tab 变红 + 通知
 │   │   ├── on-notify.sh        # 通知处理
+│   │   ├── on-permission-pending.sh # 权限弹窗记录（飞书桥接）
 │   │   └── tab-color-common.sh # 共享颜色管理
+│   ├── feishu-bridge/           # 飞书权限桥接
+│   │   ├── daemon.py            # 守护进程
+│   │   ├── feishu_client.py     # 飞书 API 封装
+│   │   ├── kitty_responder.py   # 按键发送
+│   │   ├── config.yaml          # 配置（需填入凭据）
+│   │   ├── config_example.yaml  # 配置模板
+│   │   └── requirements.txt     # Python 依赖
 │   ├── shell-functions.sh      # Tab 管理 Shell 函数
 │   ├── install.sh              # 一键安装脚本
 │   ├── uninstall.sh            # 卸载脚本
