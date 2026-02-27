@@ -2,11 +2,18 @@ feishu:
   app_id: ""          # 飞书自建应用 App ID
   app_secret: ""      # 飞书自建应用 App Secret
   user_id: ""         # 接收消息的用户 open_id
+  chat_id: ""         # P2P 聊天 ID（可选，留空自动从首条消息捕获）
 
 bridge:
   wait_minutes: 5     # 等待多久后发飞书通知
   poll_interval: 2    # 扫描 pending 文件间隔（秒）
   expire_minutes: 30  # pending 文件过期清理时间
+  poll_api_interval: 2 # API 轮询间隔（秒），0=禁用轮询
 
 kitty:
-  socket: ""  # 留空自动从 pending 文件获取（推荐），也可手动指定如 unix:@mykitty-PID
+  socket: ""  # 留空自动检测（推荐），也可手动指定如 unix:@mykitty-PID
+
+hub:
+  registry_cleanup_interval: 30  # 注册表清理间隔（秒）
+  max_screen_lines: 20           # 进度查看最大行数
+  command_max_length: 500        # 指令最大长度

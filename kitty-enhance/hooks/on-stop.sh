@@ -50,4 +50,40 @@ ensure_poller "$KITTY_SOCKET"
 # 清理 feishu-bridge pending 文件（任务已停止，权限弹窗不再需要）
 rm -f "/tmp/feishu-bridge/${WINDOW_ID}.json" 2>/dev/null
 
+# 终端注册：状态更新为 completed
+source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
+_feishu_register "completed"
+
+# 发送完成通知到飞书（让用户可以继续发指令）
+TAB_TITLE=$(kitty @ --to "$KITTY_SOCKET" ls 2>/dev/null | python3 -c "
+import json, sys
+wid = '$WINDOW_ID'
+try:
+    data = json.load(sys.stdin)
+    for os_win in data:
+        for tab in os_win.get('tabs', []):
+            for win in tab.get('windows', []):
+                if str(win.get('id')) == wid:
+                    print(tab.get('title', ''))
+                    sys.exit(0)
+except: pass
+" 2>/dev/null || true)
+
+SCREEN_TAIL=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --extent=screen 2>/dev/null | tail -20 || true)
+
+python3 << PYEOF
+import json, time
+info = {
+    'type': 'completed',
+    'window_id': '$WINDOW_ID',
+    'kitty_socket': '$KITTY_SOCKET',
+    'tab_title': '$TAB_TITLE',
+    'screen_tail': '''$SCREEN_TAIL''',
+    'timestamp': time.time(),
+}
+path = '/tmp/feishu-bridge/\${WINDOW_ID}_completed.json'
+with open(path, 'w') as f:
+    json.dump(info, f, ensure_ascii=False, indent=2)
+PYEOF
+
 exit 0

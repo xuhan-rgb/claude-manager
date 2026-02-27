@@ -7,6 +7,8 @@
 - 回复确认消息
 """
 
+from __future__ import annotations
+
 import json
 import logging
 
@@ -14,10 +16,9 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
-    CreateMessageResponse,
+    ListMessageRequest,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
-    P2ImMessageReceiveV1,
 )
 
 logger = logging.getLogger("feishu-bridge")
@@ -38,12 +39,12 @@ class FeishuClient:
             lark.Client.builder()
             .app_id(app_id)
             .app_secret(app_secret)
-            .log_level(lark.LogLevel.WARNING)
+            .log_level(lark.LogLevel.INFO)
             .build()
         )
 
     def send_permission_message(self, pending: dict) -> str:
-        """发送权限确认卡片消息，返回 message_id"""
+        """发送待确认卡片消息（权限/文本输入），返回 message_id"""
         # 计算等待时长
         import time
 
@@ -56,6 +57,7 @@ class FeishuClient:
         tab_title = pending.get("tab_title", "")
         screen_tail = pending.get("screen_tail", "")
         message = pending.get("message", "")
+        reply_mode = pending.get("reply_mode", "permission")
 
         # 构造详情内容
         detail_lines = []
@@ -73,6 +75,13 @@ class FeishuClient:
 
         detail_content = "\n".join(detail_lines)
 
+        if reply_mode == "text_input":
+            header_text = f"🟡 Claude Code 等待输入 [窗口 {pending.get('window_id', '?')}]"
+            reply_hint = "直接回复**任意文本**会发送到终端并回车；回复 **取消** 可忽略"
+        else:
+            header_text = f"🟡 Claude Code 权限确认 [窗口 {pending.get('window_id', '?')}]"
+            reply_hint = "回复 **y** 允许 | 回复 **n** 拒绝"
+
         # 构造卡片
         card = json.dumps(
             {
@@ -81,7 +90,7 @@ class FeishuClient:
                     "template": "yellow",
                     "title": {
                         "tag": "plain_text",
-                        "content": f"🟡 Claude Code 权限确认 [窗口 {pending.get('window_id', '?')}]",
+                        "content": header_text,
                     },
                 },
                 "elements": [
@@ -92,13 +101,141 @@ class FeishuClient:
                     {"tag": "hr"},
                     {
                         "tag": "markdown",
-                        "content": "回复 **y** 允许 | 回复 **n** 拒绝",
+                        "content": reply_hint,
                     },
                 ],
             },
             ensure_ascii=False,
         )
 
+        msg_id = self._send_card(card)
+        if msg_id:
+            logger.info("飞书消息发送成功: message_id=%s", msg_id)
+        return msg_id
+
+    def send_text_message(self, text: str) -> str:
+        """发送纯文本消息，返回 message_id"""
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("open_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(self.user_id)
+                .msg_type("text")
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        resp = self.client.im.v1.message.create(request)
+        if not resp.success():
+            logger.error("飞书文本发送失败: code=%s, msg=%s", resp.code, resp.msg)
+            return ""
+        return resp.data.message_id
+
+    def send_terminal_list(self, terminals: list[dict]) -> str:
+        """发送终端列表卡片"""
+        from terminal_registry import STATUS_ICON, STATUS_TEXT, format_time_ago
+
+        if not terminals:
+            return self.send_text_message("📋 当前没有在线的 Claude 终端")
+
+        lines = []
+        for t in terminals:
+            icon = STATUS_ICON.get(t.get("status", "idle"), "⚪")
+            status = STATUS_TEXT.get(t.get("status", "idle"), "未知")
+            title = t.get("tab_title") or t.get("cwd", "").split("/")[-1] or "未知"
+            ago = format_time_ago(t.get("last_activity", 0))
+            lines.append(f"{icon} **#{t['window_id']}**  {title}　　{status}　{ago}")
+
+        body = "\n".join(lines)
+        card = json.dumps({
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"📋 Claude 终端列表（共 {len(terminals)} 个）",
+                },
+            },
+            "elements": [
+                {"tag": "markdown", "content": body},
+                {"tag": "hr"},
+                {"tag": "markdown", "content": '回复 **#编号** 查看详情，如 "#7 进度"'},
+            ],
+        }, ensure_ascii=False)
+
+        return self._send_card(card)
+
+    def send_terminal_detail(self, terminal: dict) -> str:
+        """发送终端详情卡片"""
+        from terminal_registry import STATUS_ICON, STATUS_TEXT, format_time_ago
+
+        wid = terminal.get("window_id", "?")
+        icon = STATUS_ICON.get(terminal.get("status", "idle"), "⚪")
+        status = STATUS_TEXT.get(terminal.get("status", "idle"), "未知")
+        title = terminal.get("tab_title") or "未知"
+        cwd = terminal.get("cwd") or "未知"
+        activity_ago = format_time_ago(terminal.get("last_activity", 0))
+        reg_ago = format_time_ago(terminal.get("registered_at", 0))
+
+        body = (
+            f"📁 **项目**: {title}\n"
+            f"📂 **路径**: {cwd}\n"
+            f"{icon} **状态**: {status}\n"
+            f"⏱️ **活跃**: {activity_ago}\n"
+            f"📅 **注册**: {reg_ago}"
+        )
+        card = json.dumps({
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "turquoise",
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"📺 终端 #{wid} 详情",
+                },
+            },
+            "elements": [
+                {"tag": "markdown", "content": body},
+                {"tag": "hr"},
+                {"tag": "markdown", "content": f'回复 "**#{wid} 进度**" 查看屏幕 | 回复 "**#{wid} <指令>**" 发送文本'},
+            ],
+        }, ensure_ascii=False)
+
+        return self._send_card(card)
+
+    def send_terminal_screen(self, window_id: str, screen_text: str) -> str:
+        """发送终端屏幕内容"""
+        import time as _time
+
+        now_str = _time.strftime("%H:%M:%S")
+        if not screen_text:
+            return self.send_text_message(f"📺 终端 #{window_id} 屏幕为空或无法抓取")
+
+        # 截断过长内容
+        if len(screen_text) > 1500:
+            screen_text = screen_text[-1500:]
+
+        body = f"```\n{screen_text}\n```\n\n最后 20 行 | 抓取于 {now_str}"
+        card = json.dumps({
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "purple",
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"📺 终端 #{window_id} 屏幕内容",
+                },
+            },
+            "elements": [
+                {"tag": "markdown", "content": body},
+            ],
+        }, ensure_ascii=False)
+
+        return self._send_card(card)
+
+    def _send_card(self, card_json: str) -> str:
+        """通用卡片发送"""
         request = (
             CreateMessageRequest.builder()
             .receive_id_type("open_id")
@@ -106,22 +243,69 @@ class FeishuClient:
                 CreateMessageRequestBody.builder()
                 .receive_id(self.user_id)
                 .msg_type("interactive")
-                .content(card)
+                .content(card_json)
                 .build()
             )
             .build()
         )
-
-        resp: CreateMessageResponse = self.client.im.v1.message.create(request)
+        resp = self.client.im.v1.message.create(request)
         if not resp.success():
-            logger.error(
-                "飞书消息发送失败: code=%s, msg=%s", resp.code, resp.msg
-            )
+            logger.error("飞书卡片发送失败: code=%s, msg=%s", resp.code, resp.msg)
             return ""
+        return resp.data.message_id
 
-        msg_id = resp.data.message_id
-        logger.info("飞书消息发送成功: message_id=%s", msg_id)
-        return msg_id
+    def list_messages(self, chat_id: str, start_time: int, page_size: int = 5) -> list[dict]:
+        """拉取指定聊天的最新消息（用于轮询兜底）
+
+        参数:
+            chat_id: 聊天 ID（P2P 或群聊）
+            start_time: 起始时间戳（秒级），只返回此时间之后的消息
+            page_size: 每页条数
+        返回:
+            [{message_id, text, parent_id, sender_id, sender_type, create_time}]
+        """
+        request = (
+            ListMessageRequest.builder()
+            .container_id_type("chat")
+            .container_id(chat_id)
+            .start_time(str(start_time))
+            .sort_type("ByCreateTimeAsc")
+            .page_size(page_size)
+            .build()
+        )
+        resp = self.client.im.v1.message.list(request)
+        if not resp.success():
+            logger.debug("拉取消息失败: code=%s, msg=%s", resp.code, resp.msg)
+            return []
+
+        results = []
+        items = resp.data.items if resp.data and resp.data.items else []
+        for msg in items:
+            if msg.msg_type != "text":
+                continue
+            # 解析消息内容
+            try:
+                body_content = msg.body.content if msg.body else ""
+                content = json.loads(body_content) if body_content else {}
+                text = content.get("text", "").strip()
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if not text:
+                continue
+
+            sender_type = msg.sender.sender_type if msg.sender else ""
+            # 跳过机器人自己发的消息
+            if sender_type != "user":
+                continue
+
+            results.append({
+                "message_id": msg.message_id,
+                "text": text,
+                "parent_id": getattr(msg, "parent_id", "") or "",
+                "sender_id": msg.sender.id if msg.sender else "",
+                "create_time": int(msg.create_time) if msg.create_time else 0,
+            })
+        return results
 
     def reply_message(self, msg_id: str, text: str):
         """回复一条文本消息"""
@@ -161,7 +345,7 @@ class FeishuClient:
             self.app_id,
             self.app_secret,
             event_handler=event_handler,
-            log_level=lark.LogLevel.WARNING,
+            log_level=lark.LogLevel.INFO,
         )
 
         logger.info("飞书 WebSocket 监听启动...")

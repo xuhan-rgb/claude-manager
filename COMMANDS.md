@@ -55,7 +55,7 @@ tc                      # = tab-reset
 ta                      # = tab-alert
 ```
 
-## 飞书权限桥接（feishu-bridge）
+## 飞书终端管理中心（feishu-bridge）
 
 ```bash
 # 一键配置（新用户用这个）
@@ -64,7 +64,7 @@ cd kitty-enhance/feishu-bridge && bash setup.sh
 # 启动守护进程（前台运行，Ctrl+C 停止）
 cd kitty-enhance/feishu-bridge && python daemon.py
 
-# 查看运行状态和 pending 请求
+# 查看运行状态、终端列表和 pending 请求
 python daemon.py status
 
 # 停止守护进程
@@ -76,6 +76,16 @@ tail -f /tmp/feishu-bridge/daemon.log
 # 安装依赖
 pip install lark-oapi pyyaml
 ```
+
+### 飞书指令（在飞书中发送）
+
+| 指令 | 功能 |
+|------|------|
+| `ls` / `列表` | 查看所有在线终端 |
+| `#7` | 查看 7 号终端详情 |
+| `#7 进度` | 查看 7 号终端屏幕内容 |
+| `#7 <文本>` | 向 7 号终端发送指令 |
+| `y` / `n` | 权限弹窗回复（允许/拒绝） |
 
 ## 调试命令
 

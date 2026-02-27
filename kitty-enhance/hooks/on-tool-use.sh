@@ -51,6 +51,10 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 
     set_tab_color "$KITTY_SOCKET" "$TAB_ID" "blue"
     ensure_poller "$KITTY_SOCKET"
+
+    # 终端注册（异步，在慢路径中执行，不影响性能）
+    source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
+    _feishu_register "working"
 ) </dev/null >/dev/null 2>&1 &
 disown
 

@@ -14,6 +14,10 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 # 读取 stdin JSON（Notification Hook 提供的上下文信息）
 INPUT=$(cat)
 
+# 过滤非权限弹窗的通知（如"等待输入"、"任务完成"）
+# 只有真正的权限请求才需要写 pending 文件
+MSG=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || true)
+
 # 抓取终端屏幕内容（权限弹窗的完整信息）
 SCREEN_TEXT=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --extent=screen 2>/dev/null || true)
 
@@ -71,5 +75,9 @@ path = os.path.join(state_dir, f'{window_id}.json')
 with open(path, 'w') as f:
     json.dump(pending, f, ensure_ascii=False, indent=2)
 PYEOF
+
+# 终端注册：状态更新为 waiting
+source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
+_feishu_register "waiting"
 
 exit 0

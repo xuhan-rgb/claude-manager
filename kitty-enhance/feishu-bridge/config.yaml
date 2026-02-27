@@ -7,3 +7,9 @@ bridge:
   wait_minutes: 0      # 立即发飞书通知（0=不等待）
   poll_interval: 1     # 扫描 pending 文件间隔（秒）
   expire_minutes: 30   # pending 文件过期清理时间
+  poll_api_interval: 2 # API 轮询间隔（秒），0=禁用轮询
+
+hub:
+  registry_cleanup_interval: 120  # 注册表扫描间隔（秒），hook 已实时注册，无需频繁扫描
+  max_screen_lines: 20            # 进度查看最大行数
+  command_max_length: 500         # 指令最大长度
