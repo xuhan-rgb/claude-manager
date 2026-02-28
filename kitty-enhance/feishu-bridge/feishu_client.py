@@ -76,27 +76,28 @@ class FeishuClient:
             descriptions = pending.get("descriptions", {})
             question = pending.get("question", "")
 
-            # 显示问题上下文（选项上方的说明文本）
+            # 问题上下文 + 选项列表合并到一个代码块
+            block_lines = []
             if question:
-                # 截断过长的上下文，保留核心内容
                 if len(question) > 800:
                     question = question[-800:]
-                detail_lines.append(f"\n```\n{question}\n```")
+                block_lines.append(question)
 
-            # 显示选项列表
             if options:
-                detail_lines.append("")
+                if block_lines:
+                    block_lines.append("")
                 for i, opt in enumerate(options, 1):
-                    marker = "📝" if i in text_input_options else f"**{i}.**"
-                    detail_lines.append(f"{marker} {opt}")
-                    # 显示选项描述（如有，且与选项文本不同）
+                    prefix = "📝" if i in text_input_options else f"{i}."
+                    block_lines.append(f"{prefix} {opt}")
                     desc = descriptions.get(i, "")
                     if desc and desc != opt:
-                        detail_lines.append(f"　　{desc}")
-            else:
-                if screen_tail:
-                    screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
-                    detail_lines.append(f"\n**终端内容**:\n```\n{screen_preview}\n```")
+                        block_lines.append(f"   {desc}")
+
+            if block_lines:
+                detail_lines.append(f"\n```\n{chr(10).join(block_lines)}\n```")
+            elif screen_tail:
+                screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
+                detail_lines.append(f"\n```\n{screen_preview}\n```")
 
             # 构造回复提示
             hint_parts = [f"↩️ 回复本卡片 **1** ~ **{len(options)}**　或　发送 **#{wid} 数字**"]

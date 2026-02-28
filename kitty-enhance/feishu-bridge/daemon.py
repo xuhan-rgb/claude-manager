@@ -409,7 +409,7 @@ class FeishuBridgeDaemon:
         return "permission"
 
     def _find_pending_request(self, parent_id: str = "") -> tuple[str | None, dict | None]:
-        """按 parent_id 定位 pending；无 parent_id 时返回最新 notified 的 pending"""
+        """按 parent_id 精确定位 pending；无 parent_id 时返回最新 notified 的 pending"""
         skip_files = {"daemon.pid", "registry.json"}
         pattern = os.path.join(STATE_DIR, "*.json")
         matched_file = None
@@ -761,35 +761,38 @@ class FeishuBridgeDaemon:
             )
             return True
 
-        # 检查是否为需要文字输入的选项（如 "Type something"、"Chat about this"）
         text_input_options = set(matched_pending.get("text_input_options", []))
-        if choice in text_input_options and not extra_text:
-            options = matched_pending.get("options", [])
-            opt_name = options[choice - 1] if choice <= len(options) else f"选项 {choice}"
-            wid = matched_pending.get("window_id", "?")
-            self._reply_or_send(
-                parent_id,
-                f"⚠️ 「{opt_name}」需要输入文字\n请回复 **{choice} 你的内容**"
-                f"（或 **#{wid} {choice} 你的内容**）"
-            )
-            return True
-
         socket = matched_pending.get("kitty_socket") or self.kitty_socket
         wid = matched_pending["window_id"]
 
         # 选项 1 已选中（光标默认在第一项），直接 Enter
-        # 选项 N → 发送 (N-1) 个 Down 箭头 + Enter
+        # 选项 N → 发送 (N-1) 个 Down 箭头
         for _ in range(choice - 1):
             send_key(wid, "down", socket)
             time.sleep(0.05)
 
-        if extra_text:
-            # "Type something" 类选项：先 Enter 进入输入模式 → 输入文本 → Enter 提交
-            send_key(wid, "enter", socket)
-            time.sleep(0.3)
-            send_keystroke(wid, extra_text, socket)
-            time.sleep(0.1)
-            send_key(wid, "enter", socket)
+        if choice in text_input_options:
+            if extra_text:
+                # 一步完成：导航到位 → 直接输入文字 → Enter
+                time.sleep(0.1)
+                send_keystroke(wid, extra_text, socket)
+                time.sleep(0.1)
+                send_key(wid, "enter", socket)
+            else:
+                # 两步交互：先导航到位，转为 text_input 等下一条消息
+                time.sleep(0.1)
+                matched_pending["reply_mode"] = "text_input"
+                matched_pending["notified"] = True
+                with open(matched_file, "w", encoding="utf-8") as f:
+                    json.dump(matched_pending, f, ensure_ascii=False, indent=2)
+                options = matched_pending.get("options", [])
+                opt_name = options[choice - 1] if choice <= len(options) else f"选项 {choice}"
+                self._reply_or_send(
+                    parent_id,
+                    f"📝 已选择「{opt_name}」，请直接回复文字内容"
+                )
+                logger.info("选择文字输入选项: window=%s, choice=%d, 等待输入", wid, choice)
+                return True
         else:
             send_key(wid, "enter", socket)
 
