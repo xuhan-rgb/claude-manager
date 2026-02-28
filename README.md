@@ -321,17 +321,42 @@ kitty @ ls
 
 ---
 
-### 飞书权限桥接（Feishu Permission Bridge）
+### 飞书终端管理中心（Feishu Terminal Hub）
 
-Claude Code 等待权限确认时，如果你不在终端前，任务会一直卡住。飞书桥接解决这个问题：
+通过飞书远程管理所有 Claude Code 终端：权限审批、进度查看、远程指令。
 
 ```
-权限弹窗出现 → Hook 记录 pending → 等待 5 分钟 → 飞书卡片通知
-                                                       ↓
-                                              你回复 y / n
-                                                       ↓
-                                         守护进程按键到终端 → 任务继续
+┌─ 权限通知 ────────────────────────────────────────────┐
+│  权限弹窗 → Hook 记录 pending → 超时 → 飞书卡片通知  │
+│                                          ↓            │
+│                                   回复 y/n → 终端继续  │
+├─ 终端管理 ────────────────────────────────────────────┤
+│  ls → 查看所有终端列表                                │
+│  #N → 终端详情    #N 进度 → 查看屏幕                  │
+│  #N <指令> → 远程发送文本到终端                       │
+├─ 完成通知 ────────────────────────────────────────────┤
+│  Claude 完成回答 → 飞书推送对话内容                   │
+└───────────────────────────────────────────────────────┘
 ```
+
+**消息通道**：WebSocket 长连接 + API 轮询双通道，消息延迟 ~2 秒（WebSocket 固有延迟 ~15 秒，API 轮询兜底）。
+
+#### 飞书指令速查
+
+| 指令 | 功能 | 示例 |
+|------|------|------|
+| `ls` | 终端列表 | `ls` |
+| `ls -l` | 详细列表（含屏幕预览） | `ls -l` |
+| `#N` | 终端详情 | `#7` |
+| `#N 进度` | 查看终端屏幕 | `#7 进度` |
+| `#N <文本>` | 远程发送指令 | `#7 请继续` |
+| `#N esc` | 发送 Esc 键 | `#7 esc` |
+| `#N ctrl+c` | 发送 Ctrl+C | `#7 ctrl+c` |
+| `#N clear` | 清空终端屏幕 | `#7 clear` |
+| `y` / `n` | 权限回复 | `y` |
+| `?` | 显示帮助 | `?` |
+
+> 终端处于工作中/等待状态时，发送指令会先弹出确认，避免误操作。
 
 #### 前置条件
 
@@ -348,8 +373,10 @@ Claude Code 等待权限确认时，如果你不在终端前，任务会一直�
 3. **开启机器人**：左侧「应用能力」→「添加应用能力」→ 开启「机器人」
 
 4. **添加权限**：左侧「权限管理」→ 搜索并开通：
-   - `im:message` — 读取消息
+   - `im:message:readonly` — 读取机器人所在聊天的消息（用于 API 轮询兜底）
    - `im:message:send_as_bot` — 以机器人身份发消息
+
+   > 隐私说明：`im:message:readonly` 仅能读取**机器人参与的聊天**，不会访问用户的其他群聊或私聊。
 
 5. **配置事件订阅**：左侧「事件与回调」→ 事件配置：
    - 订阅方式选「**长连接**」
@@ -376,11 +403,18 @@ feishu:
   app_id: "cli_xxxxx"        # 飞书自建应用 App ID
   app_secret: "xxxxx"        # 飞书自建应用 App Secret
   user_id: "ou_xxxxx"        # 接收消息的用户 open_id
+  chat_id: ""                # P2P 聊天 ID（可选，留空自动捕获）
 
 bridge:
-  wait_minutes: 5             # 等待多久后发飞书通知
-  poll_interval: 5            # 扫描间隔（秒）
+  wait_minutes: 5             # 等待多久后发飞书通知（0=立即）
+  poll_interval: 2            # 扫描 pending 文件间隔（秒）
   expire_minutes: 30          # pending 过期清理时间
+  poll_api_interval: 2        # API 轮询间隔（秒），0=禁用
+
+hub:
+  registry_cleanup_interval: 120  # 注册表清理间隔（秒）
+  max_screen_lines: 20            # 进度查看最大行数
+  command_max_length: 500         # 指令最大长度
 ```
 
 #### 使用
@@ -390,14 +424,24 @@ bridge:
 cd kitty-enhance/feishu-bridge
 python daemon.py
 
-# 查看状态
+# 查看状态（含在线终端列表）
 python daemon.py status
 
 # 停止
 python daemon.py stop
 ```
 
-启动后，当 Claude Code 权限弹窗超过 5 分钟无人操作，你会在飞书收到卡片通知，直接回复 **y**（允许）或 **n**（拒绝），终端自动继续。
+启动后：
+- **权限通知**：Claude Code 权限弹窗超时后自动发送飞书卡片，回复 y/n 即可操作
+- **完成通知**：Claude 完成回答后推送对话内容到飞书
+- **终端管理**：随时发送 `ls` 查看所有终端，`#N 进度` 查看屏幕
+
+#### 终端自动注册
+
+终端通过两种方式注册到管理中心：
+
+1. **Hook 实时注册**（推荐）：Claude Code Hook 在工具调用、完成、权限弹窗时自动注册终端状态
+2. **定期扫描**：守护进程定期扫描所有 Kitty 实例，发现运行 Claude 的窗口自动注册
 
 #### 新用户接入（一键配置）
 
@@ -699,11 +743,14 @@ tail -f ~/.config/claude-manager/logs/app.log
 │   │   ├── on-stop.sh          # 完成时 Tab 变红 + 通知
 │   │   ├── on-notify.sh        # 通知处理
 │   │   ├── on-permission-pending.sh # 权限弹窗记录（飞书桥接）
+│   │   ├── feishu-register.sh  # 终端注册公共函数（被各 Hook source）
 │   │   └── tab-color-common.sh # 共享颜色管理
-│   ├── feishu-bridge/           # 飞书权限桥接
-│   │   ├── daemon.py            # 守护进程
-│   │   ├── feishu_client.py     # 飞书 API 封装
-│   │   ├── kitty_responder.py   # 按键发送
+│   ├── feishu-bridge/           # 飞书终端管理中心
+│   │   ├── daemon.py            # 守护进程（权限通知 + 终端管理 + API 轮询）
+│   │   ├── feishu_client.py     # 飞书 API 封装（卡片/文本/消息拉取）
+│   │   ├── command_handler.py   # 飞书指令解析（ls/#N/y/n 等）
+│   │   ├── terminal_registry.py # 终端注册表（多 Kitty 实例发现与管理）
+│   │   ├── kitty_responder.py   # Kitty 终端交互（按键/屏幕抓取/清屏）
 │   │   ├── config.yaml          # 配置（需填入凭据）
 │   │   ├── config_example.yaml  # 配置模板
 │   │   └── requirements.txt     # Python 依赖

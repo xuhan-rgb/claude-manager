@@ -54,10 +54,10 @@ try:
 except Exception:
     hook_data = {}
 
-# 获取屏幕内容，取最后 25 行（权限弹窗通常在底部）
+# 获取屏幕内容，取最后 50 行（包含问题上下文 + 选项）
 screen = os.environ.get('SCREEN_TEXT', '')
 lines = [l for l in screen.strip().split('\n') if l.strip()] if screen else []
-screen_tail = '\n'.join(lines[-25:]) if lines else ''
+screen_tail = '\n'.join(lines[-50:]) if lines else ''
 
 pending = {
     'window_id': window_id,

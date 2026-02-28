@@ -44,7 +44,7 @@ class FeishuClient:
         )
 
     def send_permission_message(self, pending: dict) -> str:
-        """发送待确认卡片消息（权限/文本输入），返回 message_id"""
+        """发送待确认卡片消息（权限/文本输入/选择），返回 message_id"""
         # 计算等待时长
         import time
 
@@ -67,27 +67,76 @@ class FeishuClient:
             detail_lines.append(f"**类型**: {message}")
         detail_lines.append(f"**等待**: {wait_str}")
 
-        # 终端屏幕截取（展示实际的权限弹窗内容）
-        if screen_tail:
-            # 截取关键部分，去掉太长的内容
-            screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
-            detail_lines.append(f"\n**终端内容**:\n```\n{screen_preview}\n```")
+        wid = pending.get("window_id", "?")
+
+        if reply_mode == "selection":
+            header_text = f"🔵 Claude Code 等待选择 [窗口 {wid}]"
+            options = pending.get("options", [])
+            text_input_options = set(pending.get("text_input_options", []))
+            descriptions = pending.get("descriptions", {})
+            question = pending.get("question", "")
+
+            # 显示问题上下文（选项上方的说明文本）
+            if question:
+                # 截断过长的上下文，保留核心内容
+                if len(question) > 800:
+                    question = question[-800:]
+                detail_lines.append(f"\n```\n{question}\n```")
+
+            # 显示选项列表
+            if options:
+                detail_lines.append("")
+                for i, opt in enumerate(options, 1):
+                    marker = "📝" if i in text_input_options else f"**{i}.**"
+                    detail_lines.append(f"{marker} {opt}")
+                    # 显示选项描述（如有，且与选项文本不同）
+                    desc = descriptions.get(i, "")
+                    if desc and desc != opt:
+                        detail_lines.append(f"　　{desc}")
+            else:
+                if screen_tail:
+                    screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
+                    detail_lines.append(f"\n**终端内容**:\n```\n{screen_preview}\n```")
+
+            # 构造回复提示
+            hint_parts = [f"↩️ 回复本卡片 **1** ~ **{len(options)}**　或　发送 **#{wid} 数字**"]
+            if text_input_options:
+                ti = min(text_input_options)
+                hint_parts.append(f"📝 选项需附文字：**{ti} 你的内容**　或　**#{wid} {ti} 你的内容**")
+            hint_parts.append(f"❌ 取消：**esc**　或　**#{wid} esc**")
+            reply_hint = "\n".join(hint_parts)
+            card_template = "blue"
+
+        elif reply_mode == "text_input":
+            header_text = f"🟡 Claude Code 等待输入 [窗口 {wid}]"
+            reply_hint = (
+                f"↩️ 回复本卡片输入文字　或　发送 **#{wid} 你的文本**\n"
+                f"❌ 回复 **取消**　或　**#{wid} 取消**"
+            )
+            card_template = "yellow"
+            if screen_tail:
+                screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
+                detail_lines.append(f"\n**终端内容**:\n```\n{screen_preview}\n```")
+
+        else:
+            header_text = f"🟡 Claude Code 权限确认 [窗口 {wid}]"
+            reply_hint = (
+                f"↩️ 回复本卡片 **y** 允许 / **n** 拒绝\n"
+                f"📌 或发送 **#{wid} y** / **#{wid} n**"
+            )
+            card_template = "yellow"
+            if screen_tail:
+                screen_preview = screen_tail[-500:] if len(screen_tail) > 500 else screen_tail
+                detail_lines.append(f"\n**终端内容**:\n```\n{screen_preview}\n```")
 
         detail_content = "\n".join(detail_lines)
-
-        if reply_mode == "text_input":
-            header_text = f"🟡 Claude Code 等待输入 [窗口 {pending.get('window_id', '?')}]"
-            reply_hint = "直接回复**任意文本**会发送到终端并回车；回复 **取消** 可忽略"
-        else:
-            header_text = f"🟡 Claude Code 权限确认 [窗口 {pending.get('window_id', '?')}]"
-            reply_hint = "回复 **y** 允许 | 回复 **n** 拒绝"
 
         # 构造卡片
         card = json.dumps(
             {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "template": "yellow",
+                    "template": card_template,
                     "title": {
                         "tag": "plain_text",
                         "content": header_text,
@@ -162,7 +211,7 @@ class FeishuClient:
             "elements": [
                 {"tag": "markdown", "content": body},
                 {"tag": "hr"},
-                {"tag": "markdown", "content": '回复 **#编号** 查看详情，如 "#7 进度"'},
+                {"tag": "markdown", "content": "**#N** 详情　|　**#N 进度** 屏幕　|　**#N y/n** 权限　|　**ls -l** 预览"},
             ],
         }, ensure_ascii=False)
 
@@ -199,7 +248,7 @@ class FeishuClient:
             "elements": [
                 {"tag": "markdown", "content": body},
                 {"tag": "hr"},
-                {"tag": "markdown", "content": f'回复 "**#{wid} 进度**" 查看屏幕 | 回复 "**#{wid} <指令>**" 发送文本'},
+                {"tag": "markdown", "content": f"**#{wid} 进度** 屏幕　|　**#{wid} y/n** 权限　|　**#{wid} 文本** 发指令"},
             ],
         }, ensure_ascii=False)
 

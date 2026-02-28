@@ -77,7 +77,84 @@ PERMISSION_MESSAGE_HINTS = (
     "approve",
 )
 
+# 选择弹窗特征（AskUserQuestion）
+SELECTION_SCREEN_HINTS = (
+    "enter to select",
+    "↑/↓ to navigate",
+    "to navigate",
+)
+
 TEXT_INPUT_CANCEL_WORDS = ("cancel", "取消")
+
+# 需要额外输入文字的选项关键词
+SELECTION_TEXT_INPUT_KEYWORDS = ("type something", "chat about this")
+
+
+def parse_selection_screen(screen_tail: str) -> dict:
+    """从终端屏幕内容解析选择弹窗的问题上下文和选项
+
+    返回 dict:
+        question: 选项上方的问题/说明文本
+        options: 选项文本列表（1-based 对应）
+        text_input_indices: 需要输入文字的选项序号集合（1-based）
+        descriptions: {序号: 描述文本} 选项下方的缩进描述行
+    """
+    import re
+    options = []
+    text_input_indices = set()
+    descriptions: dict[int, str] = {}
+    question_lines = []
+    first_option_line = -1
+    last_option_idx = 0
+
+    lines = screen_tail.split("\n")
+    option_pattern = re.compile(r"^[〉>›»]?\s*(\d+)\.\s+(.*)")
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        m = option_pattern.match(stripped)
+        if m:
+            idx = int(m.group(1))
+            text = m.group(2).strip()
+            if first_option_line < 0:
+                first_option_line = i
+
+            # 填充缺失的选项（序号跳跃）
+            while len(options) < idx - 1:
+                options.append(f"选项 {len(options) + 1}")
+            if len(options) < idx:
+                # TUI 选中项可能无文字（kitty get-text 捕获不到高亮行的文本）
+                options.append(text if text else f"选项 {idx}")
+
+            # 检测文字输入类选项
+            if any(k in text.lower() for k in SELECTION_TEXT_INPUT_KEYWORDS):
+                text_input_indices.add(idx)
+            last_option_idx = idx
+        elif first_option_line >= 0 and last_option_idx > 0:
+            # 选项下方的缩进描述行
+            if stripped and not option_pattern.match(stripped):
+                desc = descriptions.get(last_option_idx, "")
+                descriptions[last_option_idx] = (desc + " " + stripped).strip() if desc else stripped
+
+    # 提取选项上方的问题上下文
+    if first_option_line > 0:
+        question_lines = [l for l in lines[:first_option_line] if l.strip()]
+    question = "\n".join(question_lines).strip()
+
+    # 补全：用描述行替换 "选项 N" 占位符
+    for idx, desc in descriptions.items():
+        if idx <= len(options) and options[idx - 1].startswith("选项 "):
+            options[idx - 1] = desc
+
+    return {
+        "question": question,
+        "options": options,
+        "text_input_indices": text_input_indices,
+        "descriptions": descriptions,
+    }
 
 
 # ── 配置加载 ──────────────────────────────────────────
@@ -106,6 +183,7 @@ def load_config(config_path: str | None) -> dict:
             "poll_interval": int(os.environ.get("FEISHU_POLL_INTERVAL", 0) or bridge_file.get("poll_interval", 2)),
             "expire_minutes": int(os.environ.get("FEISHU_EXPIRE_MINUTES", 0) or bridge_file.get("expire_minutes", 30)),
             "poll_api_interval": int(bridge_file.get("poll_api_interval", 2)),
+            "max_message_age": int(bridge_file.get("max_message_age", 300)),
         },
         "kitty": {
             "socket": kitty_file.get("socket", ""),
@@ -140,6 +218,10 @@ class FeishuBridgeDaemon:
         self.command_max_length = hub_cfg["command_max_length"]
         self._pending_commands = {}  # {feishu_msg_id: {"window_id", "text", "timestamp"}}
         self._running = True
+        self._start_time = time.time()  # 守护进程启动时间
+
+        # 消息过期阈值（秒）：超过此延迟的消息直接丢弃
+        self.max_message_age = int(bridge_cfg.get("max_message_age", 300))
 
         # API 轮询兜底（降低 WebSocket 固有延迟）
         self.poll_api_interval = int(bridge_cfg.get("poll_api_interval", 2))
@@ -240,8 +322,6 @@ class FeishuBridgeDaemon:
                     if create_ts:
                         last_time = str(create_ts // 1000 + 1) if create_ts > 1e12 else str(create_ts + 1)
 
-                    logger.info("[轮询] 新消息: text=%s, delay=%.1fs",
-                                m["text"][:50], time.time() - (create_ts / 1000 if create_ts > 1e12 else create_ts))
                     self._process_reply(m["text"], m["parent_id"], create_ts)
             except Exception:
                 logger.exception("[轮询] 异常")
@@ -305,13 +385,17 @@ class FeishuBridgeDaemon:
         return os.environ.get("KITTY_LISTEN_ON", "")
 
     def _detect_pending_mode(self, pending: dict) -> str:
-        """识别 pending 类型：permission / text_input"""
+        """识别 pending 类型：permission / text_input / selection"""
         mode = pending.get("reply_mode")
-        if mode in ("permission", "text_input"):
+        if mode in ("permission", "text_input", "selection"):
             return mode
 
         message = str(pending.get("message", "")).strip().lower()
         screen_tail = str(pending.get("screen_tail", "")).strip().lower()
+
+        # 选择弹窗优先检测（屏幕含 "Enter to select · ↑/↓ to navigate"）
+        if any(k in screen_tail for k in SELECTION_SCREEN_HINTS):
+            return "selection"
 
         if any(k in message for k in TEXT_INPUT_MESSAGE_HINTS):
             return "text_input"
@@ -354,6 +438,23 @@ class FeishuBridgeDaemon:
 
         return matched_file, matched_pending
 
+    def _find_pending_by_window(self, window_id: str) -> tuple[str | None, dict | None]:
+        """通过 window_id 精确查找已通知的 pending 文件"""
+        skip_files = {"daemon.pid", "registry.json"}
+        pattern = os.path.join(STATE_DIR, "*.json")
+        for filepath in glob.glob(pattern):
+            basename = os.path.basename(filepath)
+            if basename in skip_files or basename.endswith("_completed.json"):
+                continue
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    pending = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                continue
+            if pending.get("window_id") == window_id and pending.get("notified"):
+                return filepath, pending
+        return None, None
+
     def _handle_parent_reply(self, text: str, parent_id: str) -> bool:
         """处理回复链中的消息（优先于普通命令解析）"""
         if not parent_id:
@@ -373,6 +474,14 @@ class FeishuBridgeDaemon:
             return False
 
         mode = self._detect_pending_mode(matched_pending)
+
+        # ── 选择弹窗：回复数字选择选项 ──
+        if mode == "selection":
+            return self._handle_selection_reply(
+                text, parent_id, matched_file, matched_pending
+            )
+
+        # ── 文本输入 ──
         if mode == "text_input":
             if text.lower() in TEXT_INPUT_CANCEL_WORDS:
                 try:
@@ -400,6 +509,7 @@ class FeishuBridgeDaemon:
             )
             return True
 
+        # ── 权限确认 y/n ──
         lower = text.lower()
         if lower in ("y", "n", "yes", "no", "是", "否"):
             self._handle_permission_reply(lower, parent_id)
@@ -426,6 +536,17 @@ class FeishuBridgeDaemon:
         # 超过等待时间且未通知 → 发飞书
         if age >= self.wait_seconds and not pending.get("notified"):
             pending["reply_mode"] = self._detect_pending_mode(pending)
+
+            # 选择弹窗：解析选项列表 + 问题上下文
+            if pending["reply_mode"] == "selection":
+                screen = pending.get("screen_tail", "")
+                parsed = parse_selection_screen(screen)
+                pending["options"] = parsed["options"]
+                pending["option_count"] = len(parsed["options"])
+                pending["text_input_options"] = list(parsed["text_input_indices"])
+                pending["question"] = parsed["question"]
+                pending["descriptions"] = parsed["descriptions"]
+
             logger.info(
                 "超过等待时间 (%d 秒)，发送飞书通知: window=%s, mode=%s",
                 int(age), pending.get("window_id"),
@@ -519,8 +640,17 @@ class FeishuBridgeDaemon:
             now = time.time()
             # 计算端到端延迟（消息创建 → 实际处理）
             if create_time:
-                delay = now - create_time / 1000
-                logger.info("收到飞书消息: text=%s, parent_id=%s, 端到端延迟=%.1fs", text, parent_id, delay)
+                # create_time 为毫秒级时间戳
+                create_ts_sec = create_time / 1000 if create_time > 1e12 else float(create_time)
+                delay = now - create_ts_sec
+                # 丢弃过期消息（daemon 离线期间积压的 WebSocket 队列）
+                if delay > self.max_message_age:
+                    logger.warning(
+                        "丢弃过期消息: text=%s, 延迟=%.0fs (阈值=%ds)",
+                        text[:50], delay, self.max_message_age,
+                    )
+                    return
+                logger.info("收到飞书消息: text=%s, parent_id=%s, 延迟=%.1fs", text, parent_id, delay)
             else:
                 logger.info("收到飞书消息: text=%s, parent_id=%s", text, parent_id)
 
@@ -536,17 +666,24 @@ class FeishuBridgeDaemon:
             elif cmd_type == "list_terminals":
                 self._handle_list_terminals(cmd.get("detail", False))
             elif cmd_type == "permission_reply":
-                self._handle_permission_reply(cmd["answer"], parent_id)
+                # 安全规则：standalone y/n 必须回复卡片或用 #N 前缀
+                self.feishu.send_text_message(
+                    "⚠️ 请**回复对应卡片**或指定终端 **#N y** / **#N n**"
+                )
             elif cmd_type == "help":
                 self.feishu.send_text_message(
-                    "📖 可用指令：\n\n"
-                    "• **ls** — 查看终端列表\n"
-                    "• **#N** — 查看终端详情\n"
-                    "• **#N 进度** — 查看终端屏幕\n"
-                    "• **#N <文本>** — 向终端发送指令\n"
-                    "• **y/n** — 权限回复\n"
-                    "• **在等待输入卡片下直接回复文本** — 回传到终端\n"
-                    "• **?** — 显示本帮助"
+                    "📖 **指令速查**\n\n"
+                    "**查看**\n"
+                    "　**ls**　终端列表　|　**ls -l**　含屏幕预览\n"
+                    "　**#N**　终端详情　|　**#N 进度**　屏幕内容\n\n"
+                    "**操作**（↩️ 回复卡片 或 #N 指定终端）\n"
+                    "　**#N y / n**　权限确认\n"
+                    "　**#N 1 / 2 / 3**　选择选项\n"
+                    "　**#N 4 文字**　输入型选项\n"
+                    "　**#N 文本**　发送指令到终端\n\n"
+                    "**控制**\n"
+                    "　**#N esc**　发送 Esc　|　**#N ctrl+c**　中断\n"
+                    "　**#N clear**　清屏　|　**?**　本帮助"
                 )
             elif cmd_type == "terminal_detail":
                 self._handle_terminal_detail(cmd["window_id"])
@@ -562,6 +699,116 @@ class FeishuBridgeDaemon:
             logger.exception("处理飞书消息异常")
 
     # ── 指令处理方法 ──────────────────────────────────
+
+    def _reply_or_send(self, parent_id: str, text: str):
+        """有 parent_id 时回复消息，否则发送新消息"""
+        if parent_id:
+            self.feishu.reply_message(parent_id, text)
+        else:
+            self.feishu.send_text_message(text)
+
+    def _handle_selection_reply(
+        self, text: str, parent_id: str, matched_file: str, matched_pending: dict
+    ) -> bool:
+        """处理选择弹窗的回复
+
+        来源：
+        - 回复卡片（parent_id 非空）
+        - #N 前缀（parent_id 为空）
+
+        格式：
+        - "1"         → 直接 Enter（已在第 1 项）
+        - "3"         → 2×Down + Enter
+        - "4 自定义文本" → 3×Down + Enter + 输入文本 + Enter
+        - "esc"       → 取消选择
+        """
+        text = text.strip()
+
+        # 支持 Esc 取消
+        if text.lower() in ("esc", "取消", "cancel"):
+            socket = matched_pending.get("kitty_socket") or self.kitty_socket
+            send_key(matched_pending["window_id"], "escape", socket)
+            try:
+                os.remove(matched_file)
+            except FileNotFoundError:
+                pass
+            self._reply_or_send(parent_id, "❌ 已取消选择")
+            logger.info("取消选择: window=%s", matched_pending.get("window_id"))
+            return True
+
+        # 解析 "N" 或 "N 文本"
+        import re
+        m = re.match(r"^(\d+)\s*(.*)", text)
+        if not m:
+            option_count = matched_pending.get("option_count", 0)
+            hint = f"1-{option_count}" if option_count else "1、2、3..."
+            self._reply_or_send(
+                parent_id, f"⚠️ 这是选择题，请回复数字（{hint}）或 esc 取消"
+            )
+            return True
+
+        choice = int(m.group(1))
+        extra_text = m.group(2).strip()
+
+        if choice < 1:
+            self._reply_or_send(parent_id, "⚠️ 选项编号从 1 开始")
+            return True
+
+        option_count = matched_pending.get("option_count", 0)
+        if option_count and choice > option_count:
+            self._reply_or_send(
+                parent_id, f"⚠️ 只有 {option_count} 个选项，请回复 1-{option_count}"
+            )
+            return True
+
+        # 检查是否为需要文字输入的选项（如 "Type something"、"Chat about this"）
+        text_input_options = set(matched_pending.get("text_input_options", []))
+        if choice in text_input_options and not extra_text:
+            options = matched_pending.get("options", [])
+            opt_name = options[choice - 1] if choice <= len(options) else f"选项 {choice}"
+            wid = matched_pending.get("window_id", "?")
+            self._reply_or_send(
+                parent_id,
+                f"⚠️ 「{opt_name}」需要输入文字\n请回复 **{choice} 你的内容**"
+                f"（或 **#{wid} {choice} 你的内容**）"
+            )
+            return True
+
+        socket = matched_pending.get("kitty_socket") or self.kitty_socket
+        wid = matched_pending["window_id"]
+
+        # 选项 1 已选中（光标默认在第一项），直接 Enter
+        # 选项 N → 发送 (N-1) 个 Down 箭头 + Enter
+        for _ in range(choice - 1):
+            send_key(wid, "down", socket)
+            time.sleep(0.05)
+
+        if extra_text:
+            # "Type something" 类选项：先 Enter 进入输入模式 → 输入文本 → Enter 提交
+            send_key(wid, "enter", socket)
+            time.sleep(0.3)
+            send_keystroke(wid, extra_text, socket)
+            time.sleep(0.1)
+            send_key(wid, "enter", socket)
+        else:
+            send_key(wid, "enter", socket)
+
+        try:
+            os.remove(matched_file)
+        except FileNotFoundError:
+            pass
+
+        # 获取选项文本
+        options = matched_pending.get("options", [])
+        if extra_text:
+            action = f"✅ 已选择选项 {choice} 并输入: {extra_text}"
+        elif choice <= len(options):
+            action = f"✅ 已选择: {options[choice - 1]}"
+        else:
+            action = f"✅ 已选择选项 {choice}"
+        self._reply_or_send(parent_id, action)
+        logger.info("选择完成: window=%s, choice=%d, extra=%s", wid, choice, extra_text or "(无)")
+        return True
 
     def _handle_permission_reply(self, answer: str, parent_id: str):
         """处理权限 y/n 回复（保持向后兼容）"""
@@ -648,11 +895,11 @@ class FeishuBridgeDaemon:
             preview = ""
             for r in results:
                 if r["window_id"] == wid:
-                    preview = r["preview"].replace("\n", " │ ")
+                    preview = r["preview"]
                     break
             lines.append(f"{icon} **#{wid}** {title}")
             if preview:
-                lines.append(f"   └ {preview}")
+                lines.append(f"```\n{preview}\n```")
 
         body = "\n".join(lines)
         card = json.dumps({
@@ -778,7 +1025,60 @@ class FeishuBridgeDaemon:
         ).start()
 
     def _handle_terminal_command(self, window_id: str, text: str):
-        """处理向终端发送指令（忙碌时需确认）"""
+        """处理向终端发送指令
+
+        安全规则：如果该终端有活跃的 pending 请求，优先作为 pending 回复处理，
+        而非直接发送到终端（避免干扰权限弹窗/选择弹窗）。
+        """
+        # ── 优先检查：该终端是否有活跃 pending ──
+        pending_file, pending_data = self._find_pending_by_window(window_id)
+        if pending_file and pending_data:
+            mode = self._detect_pending_mode(pending_data)
+            if mode == "selection":
+                return self._handle_selection_reply(
+                    text, "", pending_file, pending_data
+                )
+            elif mode == "text_input":
+                if text.lower() in TEXT_INPUT_CANCEL_WORDS:
+                    try:
+                        os.remove(pending_file)
+                    except FileNotFoundError:
+                        pass
+                    self.feishu.send_text_message(f"❌ 已取消终端 #{window_id} 的输入")
+                    return
+                socket = pending_data.get("kitty_socket") or self.kitty_socket
+                send_keystroke(window_id, text, socket)
+                time.sleep(0.15)
+                send_keystroke(window_id, "\r", socket)
+                try:
+                    os.remove(pending_file)
+                except FileNotFoundError:
+                    pass
+                self.feishu.send_text_message(f"✅ 已发送文本到终端 #{window_id}")
+                logger.info("文本输入（#N）: window=%s, text=%s", window_id, text[:60])
+                return
+            elif mode == "permission":
+                lower = text.lower()
+                if lower in ("y", "n", "yes", "no", "是", "否"):
+                    is_allow = lower in ("y", "yes", "是")
+                    socket = pending_data.get("kitty_socket") or self.kitty_socket
+                    keystroke = "\r" if is_allow else "\x1b"
+                    send_keystroke(window_id, keystroke, socket)
+                    action = "✅ 已允许" if is_allow else "❌ 已拒绝"
+                    try:
+                        os.remove(pending_file)
+                    except FileNotFoundError:
+                        pass
+                    self.feishu.send_text_message(f"{action} 终端 #{window_id}")
+                    logger.info("权限回复（#N）: window=%s, action=%s", window_id, action)
+                    return
+                else:
+                    self.feishu.send_text_message(
+                        f"⚠️ 终端 #{window_id} 等待权限确认，请发送 **#{window_id} y** 或 **#{window_id} n**"
+                    )
+                    return
+
+        # ── 正常终端指令流程 ──
         info = get_terminal_info(window_id)
         if not info:
             threading.Thread(
