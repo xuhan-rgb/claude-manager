@@ -16,6 +16,131 @@ success() { echo -e "${GREEN}✅${NC} $*"; }
 warning() { echo -e "${YELLOW}⚠️${NC}  $*"; }
 error() { echo -e "${RED}❌${NC} $*"; }
 
+INSTALL_MODE="full"
+
+# 帮助信息
+print_help() {
+    echo "用法: ./install.sh [选项]"
+    echo ""
+    echo "选项："
+    echo "  --bridge-only  仅安装飞书桥接（不替换 kitty 配置）"
+    echo "  --full         完整安装（默认，含 kitty 配置定制）"
+    echo "  -h, --help     显示帮助"
+}
+
+# 仅追加 Remote Control 配置（bridge-only 模式）
+ensure_kitty_remote_control() {
+    info "检查 Kitty Remote Control 配置..."
+
+    local kitty_conf="$HOME/.config/kitty/kitty.conf"
+    mkdir -p "$HOME/.config/kitty"
+
+    if [ ! -f "$kitty_conf" ]; then
+        cat > "$kitty_conf" << 'EOF'
+# Feishu Bridge 需要的最小配置
+allow_remote_control yes
+listen_on unix:/tmp/mykitty-{kitty_pid}
+EOF
+        success "已创建最小 kitty.conf（allow_remote_control + listen_on）"
+        return
+    fi
+
+    local changed=false
+
+    # 检查 allow_remote_control
+    if grep -qE '^\s*allow_remote_control\s+yes' "$kitty_conf"; then
+        info "allow_remote_control 已启用"
+    elif grep -qE '^\s*allow_remote_control' "$kitty_conf"; then
+        warning "kitty.conf 中 allow_remote_control 不是 yes，飞书桥接需要此设置"
+        warning "请手动修改为: allow_remote_control yes"
+    else
+        echo "" >> "$kitty_conf"
+        echo "# Feishu Bridge 需要远程控制" >> "$kitty_conf"
+        echo "allow_remote_control yes" >> "$kitty_conf"
+        changed=true
+        success "已追加 allow_remote_control yes"
+    fi
+
+    # 检查 listen_on
+    if grep -qE '^\s*listen_on\s+' "$kitty_conf"; then
+        info "listen_on 已配置"
+    else
+        echo "# Feishu Bridge 需要监听 socket" >> "$kitty_conf"
+        echo "listen_on unix:/tmp/mykitty-{kitty_pid}" >> "$kitty_conf"
+        changed=true
+        success "已追加 listen_on"
+    fi
+
+    if [ "$changed" = true ]; then
+        warning "请重启 Kitty 使配置生效"
+    fi
+}
+
+# bridge-only 验证
+verify_bridge_installation() {
+    info "验证 Bridge 安装..."
+
+    local errors=0
+
+    # 检查 kitty remote control 配置
+    local kitty_conf="$HOME/.config/kitty/kitty.conf"
+    if [ -f "$kitty_conf" ] && grep -qE '^\s*allow_remote_control\s+yes' "$kitty_conf"; then
+        success "Kitty Remote Control 已启用"
+    else
+        warning "Kitty Remote Control 可能未启用"
+    fi
+
+    # 检查核心 hooks
+    for h in on-stop.sh on-notify.sh on-tool-use.sh on-permission-pending.sh feishu-register.sh; do
+        if [ -f "$HOME/.claude/hooks/$h" ]; then
+            success "  Hook: $h"
+        else
+            error "  Hook 缺失: $h"
+            ((errors++))
+        fi
+    done
+
+    # 测试 kitty remote control
+    local kitty_sock="${KITTY_LISTEN_ON:-unix:@mykitty}"
+    if timeout 2 kitty @ --to "$kitty_sock" ls &>/dev/null; then
+        success "Kitty Remote Control 可用"
+    else
+        warning "Kitty Remote Control 测试失败（可能需要重启 Kitty）"
+    fi
+
+    if [ $errors -gt 0 ]; then
+        error "安装验证失败 ($errors 个错误)"
+        return 1
+    fi
+    success "Bridge 安装验证通过"
+    return 0
+}
+
+# bridge-only 使用说明
+print_bridge_usage() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  飞书桥接安装完成（bridge-only 模式）"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "已安装："
+    echo "  ✅ Claude Code Hooks（权限通知、状态注册）"
+    echo "  ✅ Kitty Remote Control 配置（allow_remote_control + listen_on）"
+    echo ""
+    echo "未安装（bridge-only 模式跳过）："
+    echo "  ⏭️  kitty.conf 主题/快捷键（保留你的原有配置）"
+    echo "  ⏭️  tmux.conf"
+    echo "  ⏭️  Tab 管理脚本和 Shell 函数"
+    echo "  ⏭️  Tab 颜色变化功能（hooks 中已自动降级）"
+    echo ""
+    echo "下一步："
+    echo "  1. 重启 Kitty（使 remote control 生效）"
+    echo "  2. 配置飞书桥接: cd feishu-bridge && cp config.example.json config.json"
+    echo "  3. 启动守护进程: cd feishu-bridge && python3 daemon.py"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
 # 检查依赖
 check_dependencies() {
     info "检查依赖..."
@@ -124,7 +249,7 @@ install_shell_functions() {
     fi
 }
 
-# 安装 Claude Code Hooks
+# 安装 Claude Code Hooks（full 模式：符号链接到 ~/.claude/hooks/）
 install_claude_hooks() {
     info "安装 Claude Code Hooks..."
 
@@ -151,25 +276,33 @@ install_claude_hooks() {
 }
 
 # 配置 Claude Code settings.json 中的 hooks
+# 参数: $1 = hook 脚本所在目录, $2 = 安装模式（full/bridge-only）
 configure_claude_hooks() {
     info "配置 Claude Code Hooks（settings.json）..."
 
     local settings="$HOME/.claude/settings.json"
-    local hook_dir="$HOME/.claude/hooks"
+    local hook_dir="$1"
+    local mode="${2:-full}"
 
-    python3 - "$settings" "$hook_dir" << 'PY'
+    python3 - "$settings" "$hook_dir" "$mode" << 'PY'
 import json, os, shutil, sys, time
 
 settings_path = sys.argv[1]
 hook_dir = sys.argv[2]
+mode = sys.argv[3] if len(sys.argv) > 3 else "full"
 data = {}
 
-# 要注册的 hook 映射：事件名 → 脚本名
-HOOK_MAP = {
+# full 模式注册全部，bridge-only 不注册纯装饰的 on-notify
+HOOK_MAP_FULL = {
     "Stop": "on-stop.sh",
     "Notification": "on-notify.sh",
     "PreToolUse": "on-tool-use.sh",
 }
+HOOK_MAP_BRIDGE = {
+    "Stop": "on-stop.sh",
+    "PreToolUse": "on-tool-use.sh",
+}
+HOOK_MAP = HOOK_MAP_FULL if mode == "full" else HOOK_MAP_BRIDGE
 
 if os.path.exists(settings_path):
     try:
@@ -192,19 +325,23 @@ for event, script in HOOK_MAP.items():
         event_hooks = []
         hooks[event] = event_hooks
 
-    # 检查是否已存在
-    exists = False
+    # 检查是否已存在完全相同的路径
+    exact_match = False
     for entry in event_hooks:
         for item in (entry.get("hooks") or []) if isinstance(entry, dict) else []:
             if isinstance(item, dict) and item.get("command") == cmd:
-                exists = True
+                exact_match = True
                 break
-    if not exists:
+        if exact_match:
+            break
+
+    if exact_match:
+        print(f"  -> hooks.{event} 已包含 {cmd}，跳过")
+    else:
+        # 路径不同则追加（允许多个同名 hook 共存）
         event_hooks.append({"hooks": [{"type": "command", "command": cmd}]})
         changed = True
         print(f"  -> 已配置 hooks.{event}: {script}")
-    else:
-        print(f"  -> hooks.{event} 已包含 {script}，跳过")
 
 if changed:
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
@@ -331,34 +468,77 @@ print_usage() {
 
 # 主流程
 main() {
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --bridge-only) INSTALL_MODE="bridge-only"; shift ;;
+            --full)        INSTALL_MODE="full"; shift ;;
+            -h|--help)     print_help; exit 0 ;;
+            *)             error "未知参数: $1"; print_help; exit 1 ;;
+        esac
+    done
+
     echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Kitty 优化安装脚本"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if [ "$INSTALL_MODE" = "bridge-only" ]; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  飞书桥接安装（bridge-only 模式）"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    else
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Kitty 优化安装脚本（完整模式）"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    fi
     echo ""
 
     check_dependencies
     echo ""
 
-    install_kitty_config
-    install_kitty_scripts
-    install_shell_functions
-    echo ""
-
-    install_claude_hooks
-    configure_claude_hooks
-    echo ""
-
-    if verify_installation; then
+    if [ "$INSTALL_MODE" = "full" ]; then
+        install_kitty_config
+        install_kitty_scripts
+        install_shell_functions
         echo ""
-        print_usage
-        exit 0
+        # full 模式：符号链接到 ~/.claude/hooks/，settings.json 指向该目录
+        install_claude_hooks
+        configure_claude_hooks "$HOME/.claude/hooks" "full"
     else
+        ensure_kitty_remote_control
         echo ""
-        error "安装未完全成功，请检查上述错误"
-        exit 1
+        # bridge-only 模式：安全安装 hooks
+        local hooks_src_dir="$(cd "$(dirname "$0")/hooks" && pwd)"
+        local hook_dir="$HOME/.claude/hooks"
+        mkdir -p "$hook_dir"
+        chmod +x "$hooks_src_dir"/*.sh
+
+        # bridge-only 模式：不往 ~/.claude/hooks/ 写任何文件
+        # settings.json 直接指向源码目录的脚本
+        info "Hooks 直接引用源码目录: $hooks_src_dir"
+        configure_claude_hooks "$hooks_src_dir" "bridge-only"
+    fi
+    echo ""
+
+    if [ "$INSTALL_MODE" = "full" ]; then
+        if verify_installation; then
+            echo ""
+            print_usage
+            exit 0
+        else
+            echo ""
+            error "安装未完全成功，请检查上述错误"
+            exit 1
+        fi
+    else
+        if verify_bridge_installation; then
+            echo ""
+            print_bridge_usage
+            exit 0
+        else
+            echo ""
+            error "Bridge 安装未完全成功，请检查上述错误"
+            exit 1
+        fi
     fi
 }
 
 # 运行
-main
+main "$@"

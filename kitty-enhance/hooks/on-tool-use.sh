@@ -17,7 +17,17 @@ if [ -f "$_cache" ]; then
 fi
 
 # === 慢路径：首次或状态重置后，后台异步设蓝色 ===
-source "$(dirname "$(readlink -f "$0")")/tab-color-common.sh"
+_COMMON="$(dirname "$(readlink -f "$0")")/tab-color-common.sh"
+if [ ! -f "$_COMMON" ]; then
+    # bridge-only 模式：仅做飞书注册
+    (
+        source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
+        _feishu_register "working"
+    ) </dev/null >/dev/null 2>&1 &
+    disown
+    exit 0
+fi
+source "$_COMMON"
 KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 
 (

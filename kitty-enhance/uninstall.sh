@@ -24,6 +24,9 @@ echo "[2/5] 删除 Claude Hooks..."
 rm -f "$CLAUDE_HOOKS_DIR/on-stop.sh"
 rm -f "$CLAUDE_HOOKS_DIR/on-notify.sh"
 rm -f "$CLAUDE_HOOKS_DIR/on-bell.sh"
+rm -f "$CLAUDE_HOOKS_DIR/on-tool-use.sh"
+rm -f "$CLAUDE_HOOKS_DIR/on-permission-pending.sh"
+rm -f "$CLAUDE_HOOKS_DIR/feishu-register.sh"
 rm -f "$CLAUDE_HOOKS_DIR/tab-color-common.sh"
 echo "  -> 已删除"
 
@@ -36,6 +39,10 @@ echo "  -> 已清理"
 echo "[4/5] 清理 Kitty 配置..."
 if [ -f "$KITTY_CONF" ]; then
     sed -i '/# === claude-manager ===/,/# === end claude-manager ===/d' "$KITTY_CONF"
+    # 清理 bridge-only 模式追加的配置行
+    sed -i '/# Feishu Bridge 需要远程控制/,+1d' "$KITTY_CONF"
+    sed -i '/# Feishu Bridge 需要监听 socket/,+1d' "$KITTY_CONF"
+    sed -i '/# Feishu Bridge 需要的最小配置/d' "$KITTY_CONF"
     echo "  -> 已清理"
 fi
 
@@ -43,7 +50,7 @@ fi
 echo "[5/5] 清理 Shell 配置..."
 for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zshrc_custom"; do
     if [ -f "$rc_file" ]; then
-        sed -i '/# Kitty Tab.*kitty-enhance\|# source claude-manager/d' "$rc_file"
+        sed -i -e '/# Kitty Tab.*kitty-enhance/d' -e '/# source claude-manager/d' "$rc_file"
         sed -i '\|kitty-enhance/shell-functions.sh\|d' "$rc_file"
         sed -i '\|claude-manager/shell-functions.sh\|d' "$rc_file"
     fi

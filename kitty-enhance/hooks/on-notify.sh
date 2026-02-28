@@ -2,7 +2,9 @@
 # on-notify.sh - Claude Code 需要用户确认时触发（hooks.Notification）
 # 功能：非聚焦 Tab 变黄，聚焦后自动恢复（不覆盖红色）
 
+# 纯装饰 hook（tab 变黄），无 tab-color 则直接退出
 COMMON="$(dirname "$(readlink -f "$0")")/tab-color-common.sh"
+if [ ! -f "$COMMON" ]; then exit 0; fi
 source "$COMMON"
 
 debug "=== on-notify.sh triggered ==="

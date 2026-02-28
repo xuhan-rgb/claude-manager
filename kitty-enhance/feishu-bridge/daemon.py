@@ -220,6 +220,9 @@ class FeishuBridgeDaemon:
         self._running = True
         self._start_time = time.time()  # 守护进程启动时间
 
+        # 允许接收消息的用户 open_id（只处理该用户的消息）
+        self._allowed_user_id = feishu_cfg["user_id"]
+
         # 消息过期阈值（秒）：超过此延迟的消息直接丢弃
         self.max_message_age = int(bridge_cfg.get("max_message_age", 300))
 
@@ -316,6 +319,9 @@ class FeishuBridgeDaemon:
                 for m in msgs:
                     msg_id = m["message_id"]
                     if not self._is_new_message(msg_id):
+                        continue
+                    # 过滤发送者
+                    if self._allowed_user_id and m.get("sender_id") != self._allowed_user_id:
                         continue
                     # 更新游标：用最新消息的 create_time（毫秒转秒 +1）
                     create_ts = m["create_time"]
@@ -607,6 +613,13 @@ class FeishuBridgeDaemon:
             msg = data.event.message
             if msg.message_type != "text":
                 return
+
+            # 过滤发送者：只处理配置的用户消息，忽略其他人
+            sender = data.event.sender
+            sender_id = sender.sender_id.open_id if sender and sender.sender_id else ""
+            if self._allowed_user_id and sender_id != self._allowed_user_id:
+                return
+
             content = json.loads(msg.content) if msg.content else {}
             text = content.get("text", "").strip()
             if not text:
