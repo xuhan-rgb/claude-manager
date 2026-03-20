@@ -1,12 +1,13 @@
 # Claude Manager
 
-基于 Kitty 终端的轻量级任务管理器，专为 Claude Code 和 ROS2 开发工作流设计。
+基于 Kitty 终端的轻量级任务管理器，专为 Claude Code / Codex 和 ROS2 开发工作流设计。
 
 ## 功能特性
 
 - **任务管理**: 创建、追踪、管理开发任务
-- **多终端支持**: 同时管理多个终端窗口（Claude、Shell、ROS2 等）
-- **状态检测**: 自动检测 Claude 任务状态（运行中/已完成/等待确认）
+- **多终端支持**: 同时管理多个终端窗口（Claude、Codex、Shell、ROS2 等）
+- **状态检测**: 自动检测 AI 任务状态（运行中/已完成/等待确认）
+- **Codex 集成**: Shell 包装 + 事件监控，Tab 自动变色通知
 - **布局预设**: 一键切换专注/开发/测试/监控模式
 - **Kitty + Tmux 集成**: 深度集成 Kitty Remote Control 和 Tmux
 
@@ -26,7 +27,7 @@
 
 **特点**：
 - ✅ 轻量化（仅需 Kitty 配置 + Shell 函数）
-- ✅ Claude 工作状态自动显示（Tab 变色：蓝→红→自动恢复）
+- ✅ Claude / Codex 工作状态自动显示（Tab 变色：蓝→红→自动恢复）
 - ✅ Tab 快速管理（`tab-rename`, `tab-project`, `tab-alert` 等）
 - ✅ 无需 Tmux，直接在 Kitty 中使用
 
@@ -744,7 +745,10 @@ tail -f ~/.config/claude-manager/logs/app.log
 │   │       └── README.md
 │   ├── scripts/                # Kitty 辅助脚本
 │   │   ├── rename-tab.sh
-│   │   └── quick-rename-tab.sh
+│   │   ├── quick-rename-tab.sh
+│   │   ├── codex-event-monitor.py  # Codex 会话事件监控
+│   │   ├── codex-working.sh        # Codex 工作中 Tab 变蓝
+│   │   └── codex-completed.sh      # Codex 完成 Tab 变红
 │   ├── hooks/                  # Claude Code Hooks
 │   │   ├── on-tool-use.sh      # 工具调用时 Tab 变蓝
 │   │   ├── on-stop.sh          # 完成时 Tab 变红 + 通知
