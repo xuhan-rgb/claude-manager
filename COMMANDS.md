@@ -2,9 +2,11 @@
 
 ## 核心特性
 
-**Claude Code 自动状态提示** ⭐
+**Claude / Codex 自动状态提示** ⭐
 - Claude 工作中：Tab 变蓝（非聚焦时显示）
 - Claude 完成时：Tab 变红 + 桌面通知（非聚焦时显示）
+- Codex 工作中：Tab 变蓝（独立链路，不改 Claude hook）
+- Codex 当前轮次完成：Tab 变红
 - 查看结果后：自动恢复原色（3 秒）
 
 ## 安装

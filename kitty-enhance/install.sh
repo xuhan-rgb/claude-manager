@@ -205,7 +205,8 @@ install_kitty_scripts() {
     mkdir -p "$scripts_dir"
 
     # 复制脚本（先删除旧的，避免同文件错误）
-    for script in scripts/*.sh; do
+    for script in scripts/*; do
+        [ -f "$script" ] || continue
         local name=$(basename "$script")
         rm -f "$scripts_dir/$name"
         cp "$script" "$scripts_dir/"
@@ -217,7 +218,7 @@ install_kitty_scripts() {
         cp "hooks/tab-color-common.sh" "$scripts_dir/"
     fi
 
-    chmod +x "$scripts_dir"/*.sh
+    chmod +x "$scripts_dir"/* 2>/dev/null || true
 
     success "Kitty 脚本已安装到: $scripts_dir"
 }
@@ -457,6 +458,11 @@ print_usage() {
     echo "    🔵 Claude 正在工作 → tab 变蓝"
     echo "    🔴 Claude 完成响应 → tab 变红"
     echo "    🟡 Claude 等待确认 → tab 变黄"
+    echo "    ✅ 切回 tab 后自动恢复颜色"
+    echo ""
+    echo "  Codex 集成："
+    echo "    🔵 Codex 开始处理 → tab 变蓝"
+    echo "    🔴 Codex 完成响应 → tab 变红"
     echo "    ✅ 切回 tab 后自动恢复颜色"
     echo ""
     echo "  调试："

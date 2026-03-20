@@ -17,6 +17,9 @@ rm -f "$KITTY_SCRIPTS_DIR/quick-rename-tab.sh"
 rm -f "$KITTY_SCRIPTS_DIR/reset-tab-color.sh"
 rm -f "$KITTY_SCRIPTS_DIR/on-bell.sh"
 rm -f "$KITTY_SCRIPTS_DIR/tab-color-common.sh"
+rm -f "$KITTY_SCRIPTS_DIR/codex-event-monitor.py"
+rm -f "$KITTY_SCRIPTS_DIR/codex-working.sh"
+rm -f "$KITTY_SCRIPTS_DIR/codex-completed.sh"
 echo "  -> 已删除"
 
 # 2. 删除 Claude Hook 链接

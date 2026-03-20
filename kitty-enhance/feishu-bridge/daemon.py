@@ -573,15 +573,20 @@ class FeishuBridgeDaemon:
         window_id = completed.get("window_id", "?")
         tab_title = completed.get("tab_title", "")
         screen_tail = completed.get("screen_tail", "")
+        last_agent_message = completed.get("last_agent_message", "")
+        agent_name = completed.get("agent_name", "Claude")
 
         # 发送完成通知（带对话内容）
-        header = f"✅ Claude 完成响应 | 终端 #{window_id}"
+        header = f"✅ {agent_name} 完成响应 | 终端 #{window_id}"
         if tab_title:
             header += f" | {tab_title}"
 
-        # 截取对话内容（取最后 30 行）
-        lines = [l for l in screen_tail.strip().split("\n") if l.strip()]
-        content = "\n".join(lines[-30:]) if lines else "(无内容)"
+        if last_agent_message:
+            content = last_agent_message
+            lines = [l for l in last_agent_message.strip().split("\n") if l.strip()]
+        else:
+            lines = [l for l in screen_tail.strip().split("\n") if l.strip()]
+            content = "\n".join(lines[-30:]) if lines else "(无内容)"
 
         # 飞书卡片发送
         card = json.dumps({
@@ -903,17 +908,20 @@ class FeishuBridgeDaemon:
         # 发送详细列表
         registry = load_registry()
         lines = []
+        claude_only = all((t.get("agent_kind") or "claude") == "claude" for t in terminals)
         for t in terminals:
             wid = t.get("window_id")
             icon = "🟢" if t.get("status") == "working" else "🔴" if t.get("status") == "completed" else "⚪"
             title = t.get("tab_title") or t.get("cwd", "").split("/")[-1] or "?"
+            agent_name = t.get("agent_name") or "Claude"
+            agent_prefix = "" if agent_name == "Claude" else f"[{agent_name}] "
             # 找 preview
             preview = ""
             for r in results:
                 if r["window_id"] == wid:
                     preview = r["preview"]
                     break
-            lines.append(f"{icon} **#{wid}** {title}")
+            lines.append(f"{icon} **#{wid}** {agent_prefix}{title}")
             if preview:
                 lines.append(f"```\n{preview}\n```")
 
@@ -924,7 +932,7 @@ class FeishuBridgeDaemon:
                 "template": "blue",
                 "title": {
                     "tag": "plain_text",
-                    "content": f"📋 Claude 终端列表（{len(terminals)} 个）",
+                    "content": f"📋 {'Claude' if claude_only else 'AI'} 终端列表（{len(terminals)} 个）",
                 },
             },
             "elements": [
@@ -1244,7 +1252,9 @@ def cmd_status():
             status = STATUS_TEXT.get(info.get("status", "idle"), "未知")
             title = info.get("tab_title") or "未知"
             ago = format_time_ago(info.get("last_activity", 0))
-            print(f"  #{wid}  {title}  [{status}]  {ago}")
+            agent_name = info.get("agent_name") or "Claude"
+            agent_prefix = "" if agent_name == "Claude" else f"[{agent_name}] "
+            print(f"  #{wid}  {agent_prefix}{title}  [{status}]  {ago}")
     else:
         print("\n无在线终端")
 

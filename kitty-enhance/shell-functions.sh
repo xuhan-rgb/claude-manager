@@ -9,6 +9,73 @@ _kitty_socket() {
     echo "${KITTY_LISTEN_ON:-unix:@mykitty}"
 }
 
+_codex_monitor_script() {
+    echo "$HOME/.config/kitty/scripts/codex-event-monitor.py"
+}
+
+_codex_target_cwd() {
+    local target="$PWD"
+    local expect_value=""
+    local arg=""
+
+    for arg in "$@"; do
+        if [ -n "$expect_value" ]; then
+            target="$arg"
+            expect_value=""
+            continue
+        fi
+
+        case "$arg" in
+            -C|--cd)
+                expect_value="1"
+                ;;
+            --cd=*)
+                target="${arg#--cd=}"
+                ;;
+        esac
+    done
+
+    if [ -n "$target" ]; then
+        python3 - "$target" <<'PY' 2>/dev/null || printf '%s\n' "$target"
+import os
+import sys
+
+print(os.path.realpath(os.path.expanduser(sys.argv[1])))
+PY
+    else
+        printf '%s\n' "$PWD"
+    fi
+}
+
+_start_codex_notify_monitor() {
+    [ "${KITTY_ENHANCE_CODEX_NOTIFY:-1}" = "1" ] || return 0
+    [ -n "${KITTY_WINDOW_ID:-}" ] || return 0
+
+    local monitor
+    monitor="$(_codex_monitor_script)"
+    [ -f "$monitor" ] || return 0
+
+    local pidfile="/tmp/kitty-codex-monitor-${KITTY_WINDOW_ID}.pid"
+    if [ -f "$pidfile" ]; then
+        local old_pid=""
+        read -r old_pid < "$pidfile"
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            kill "$old_pid" 2>/dev/null || true
+        fi
+        rm -f "$pidfile"
+    fi
+
+    local target_cwd
+    target_cwd="$(_codex_target_cwd "$@")"
+
+    python3 "$monitor" \
+        --window-id "${KITTY_WINDOW_ID}" \
+        --kitty-socket "$(_kitty_socket)" \
+        --cwd "$target_cwd" \
+        >/dev/null 2>&1 &
+    echo "$!" > "$pidfile"
+}
+
 # 重命名 tab（完整版）
 tab-rename() {
     local name="${1:-}"
@@ -55,6 +122,11 @@ tab-warning() {
 tab-done() {
     kitty @ --to "$(_kitty_socket)" set-tab-color \
         active_bg=#00FF00 active_fg=#000000
+}
+
+codex() {
+    _start_codex_notify_monitor "$@"
+    command codex "$@"
 }
 
 # 别名

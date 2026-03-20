@@ -188,16 +188,23 @@ class FeishuClient:
         """发送终端列表卡片"""
         from terminal_registry import STATUS_ICON, STATUS_TEXT, format_time_ago
 
+        def is_claude_only(items: list[dict]) -> bool:
+            return all((item.get("agent_kind") or "claude") == "claude" for item in items)
+
         if not terminals:
             return self.send_text_message("📋 当前没有在线的 Claude 终端")
 
+        claude_only = is_claude_only(terminals)
+        title_text = f"📋 {'Claude' if claude_only else 'AI'} 终端列表（共 {len(terminals)} 个）"
         lines = []
         for t in terminals:
             icon = STATUS_ICON.get(t.get("status", "idle"), "⚪")
             status = STATUS_TEXT.get(t.get("status", "idle"), "未知")
             title = t.get("tab_title") or t.get("cwd", "").split("/")[-1] or "未知"
             ago = format_time_ago(t.get("last_activity", 0))
-            lines.append(f"{icon} **#{t['window_id']}**  {title}　　{status}　{ago}")
+            agent_name = t.get("agent_name") or "Claude"
+            agent_prefix = "" if agent_name == "Claude" else f"[{agent_name}] "
+            lines.append(f"{icon} **#{t['window_id']}**  {agent_prefix}{title}　　{status}　{ago}")
 
         body = "\n".join(lines)
         card = json.dumps({
@@ -206,7 +213,7 @@ class FeishuClient:
                 "template": "blue",
                 "title": {
                     "tag": "plain_text",
-                    "content": f"📋 Claude 终端列表（共 {len(terminals)} 个）",
+                    "content": title_text,
                 },
             },
             "elements": [
@@ -229,13 +236,17 @@ class FeishuClient:
         cwd = terminal.get("cwd") or "未知"
         activity_ago = format_time_ago(terminal.get("last_activity", 0))
         reg_ago = format_time_ago(terminal.get("registered_at", 0))
+        agent_name = terminal.get("agent_name") or "Claude"
 
         body = (
             f"📁 **项目**: {title}\n"
             f"📂 **路径**: {cwd}\n"
+            + (f"🤖 **类型**: {agent_name}\n" if agent_name != "Claude" else "")
+            + (
             f"{icon} **状态**: {status}\n"
             f"⏱️ **活跃**: {activity_ago}\n"
             f"📅 **注册**: {reg_ago}"
+            )
         )
         card = json.dumps({
             "config": {"wide_screen_mode": True},

@@ -1,7 +1,7 @@
 """
 终端注册表管理
 
-维护 registry.json，记录所有在线 Claude 终端的状态。
+维护 registry.json，记录所有在线 AI 终端的状态。
 Hook 写入注册信息，daemon 读取并定期清理。
 """
 
@@ -76,19 +76,36 @@ def get_active_window_ids(socket: str) -> set[str]:
         return set()
 
 
+def _agent_name(kind: str) -> str:
+    if kind == "codex":
+        return "Codex"
+    return "Claude"
+
+
+def _detect_agent_kind(win: dict) -> str | None:
+    """判断窗口是否运行受支持的 AI 终端"""
+    for proc in win.get("foreground_processes", []):
+        cmdline = proc.get("cmdline", [])
+        tokens = [os.path.basename(str(token)).lower() for token in cmdline if token]
+        if any("claude" in token for token in tokens):
+            return "claude"
+        if any(token == "codex" or token.startswith("codex-") for token in tokens):
+            return "codex"
+    return None
+
+
 def cleanup_registry(socket: str) -> int:
-    """清理已关闭或不再运行 Claude 的终端，返回移除数量"""
+    """清理已关闭或不再运行受支持终端的窗口，返回移除数量"""
     registry = load_registry()
     if not registry:
         return 0
 
-    # 获取当前运行 Claude 的窗口 ID
-    claude_windows = _get_claude_window_ids(socket)
-    if claude_windows is None:
+    active_windows = _get_supported_window_ids(socket)
+    if active_windows is None:
         # kitty 命令失败时不清理，避免误删
         return 0
 
-    to_remove = [wid for wid in registry if wid not in claude_windows]
+    to_remove = [wid for wid in registry if wid not in active_windows]
     for wid in to_remove:
         del registry[wid]
         logger.info("清理终端: window=%s", wid)
@@ -98,8 +115,8 @@ def cleanup_registry(socket: str) -> int:
     return len(to_remove)
 
 
-def _get_claude_window_ids(socket: str) -> set[str] | None:
-    """获取所有运行 Claude 的窗口 ID，失败返回 None"""
+def _get_supported_window_ids(socket: str) -> set[str] | None:
+    """获取所有运行受支持 AI 终端的窗口 ID，失败返回 None"""
     cmd = ["kitty", "@", "--to", socket, "ls"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -110,24 +127,15 @@ def _get_claude_window_ids(socket: str) -> set[str] | None:
         for os_win in data:
             for tab in os_win.get("tabs", []):
                 for win in tab.get("windows", []):
-                    if _is_claude_window(win):
+                    if _detect_agent_kind(win):
                         ids.add(str(win.get("id", "")))
         return ids
     except Exception:
         return None
 
 
-def _is_claude_window(win: dict) -> bool:
-    """判断窗口是否运行 Claude Code（进程名包含 'claude'）"""
-    for proc in win.get("foreground_processes", []):
-        cmdline = proc.get("cmdline", [])
-        if cmdline and "claude" in cmdline[0]:
-            return True
-    return False
-
-
 def scan_and_register(socket: str) -> int:
-    """扫描单个 kitty socket，将运行 Claude 的窗口自动注册，返回新注册数量"""
+    """扫描单个 kitty socket，将运行受支持 AI 终端的窗口自动注册，返回新注册数量"""
     cmd = ["kitty", "@", "--to", socket, "ls"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -143,7 +151,7 @@ def scan_and_register(socket: str) -> int:
     new_count = 0
     now = time.time()
 
-    claude_wids = []
+    supported_wids = []
     all_wids = []
     for os_win in data:
         for tab in os_win.get("tabs", []):
@@ -153,14 +161,17 @@ def scan_and_register(socket: str) -> int:
                 if not wid:
                     continue
                 all_wids.append(wid)
-                if not _is_claude_window(win):
+                agent_kind = _detect_agent_kind(win)
+                if not agent_kind:
                     continue
-                claude_wids.append(wid)
+                supported_wids.append(f"{wid}:{agent_kind}")
                 if wid in registry:
                     # 已注册的更新 tab_title 和 socket（可能变化）
                     if tab_title and registry[wid].get("tab_title") != tab_title:
                         registry[wid]["tab_title"] = tab_title
                     registry[wid]["kitty_socket"] = socket
+                    registry[wid]["agent_kind"] = agent_kind
+                    registry[wid]["agent_name"] = _agent_name(agent_kind)
                     continue
                 cwd = ""
                 foreground = win.get("foreground_processes", [])
@@ -174,6 +185,8 @@ def scan_and_register(socket: str) -> int:
                     "registered_at": now,
                     "last_activity": now,
                     "status": "idle",
+                    "agent_kind": agent_kind,
+                    "agent_name": _agent_name(agent_kind),
                 }
                 new_count += 1
 
@@ -181,8 +194,8 @@ def scan_and_register(socket: str) -> int:
         save_registry(registry)
     if new_count:
         logger.info("扫描注册: socket=%s, 新增 %d 个终端", socket, new_count)
-    logger.debug("扫描结果: socket=%s, 总窗口=%d, Claude=%s",
-                 socket, len(all_wids), claude_wids)
+    logger.debug("扫描结果: socket=%s, 总窗口=%d, 受支持终端=%s",
+                 socket, len(all_wids), supported_wids)
     return new_count
 
 
@@ -226,18 +239,18 @@ def cleanup_all_kitty() -> int:
     if not sockets:
         return 0
 
-    all_claude_windows: set[str] = set()
+    all_supported_windows: set[str] = set()
     any_success = False
     for sock in sockets:
-        wids = _get_claude_window_ids(sock)
+        wids = _get_supported_window_ids(sock)
         if wids is not None:
-            all_claude_windows.update(wids)
+            all_supported_windows.update(wids)
             any_success = True
 
     if not any_success:
         return 0
 
-    to_remove = [wid for wid in registry if wid not in all_claude_windows]
+    to_remove = [wid for wid in registry if wid not in all_supported_windows]
     for wid in to_remove:
         del registry[wid]
         logger.info("清理终端: window=%s", wid)
