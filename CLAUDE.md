@@ -112,7 +112,7 @@ cd manager && pytest
 - `~/.config/claude-manager/config.yaml`：状态检测与 UI 宽度
 - `~/.config/claude-manager/terminal.yaml`：终端类型选择、面板布局
 - `~/.config/claude-manager/layout.yaml`：保存上次的面板宽度
-- `~/.config/claude-manager/claude_env.conf`：Claude API 环境变量覆盖
+- Claude API 环境变量：自动继承启动进程的 `ANTHROPIC_*` 变量
 - `~/.config/claude-manager/logs/app.log`：运行日志
 - `~/.local/share/claude-manager/data/tasks.json`：任务持久化
 

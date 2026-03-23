@@ -73,10 +73,11 @@ ta / tab-alert     # 标记为红色
 **适用场景**：复杂多任务开发（ROS2、多项目并行）、需要集中管理多个 Claude 会话
 
 **特点**：
-- ✅ TUI 任务管理面板（创建/删除/切换任务）
+- ✅ TUI 任务管理面板（创建/删除/切换任务，禁止重名）
 - ✅ 自动任务状态检测（运行中/已完成）
+- ✅ 工作目录路径补全（输入提示 + ↓ 弹出目录列表浏览）
 - ✅ Tmux 深度集成（分屏管理、窗口布局）
-- ✅ 布局预设快捷键（专注/开发/测试/监控模式）
+- ✅ 环境变量自动继承（无需手动配置文件）
 - ✅ 结合 Kitty 优化 + Tmux 优化 + Claude Manager
 
 **前置要求**：
@@ -132,8 +133,8 @@ claude-manager --debug
 # Ubuntu/Debian
 sudo apt install kitty tmux xclip
 
-# Python 依赖
-pip install -e .
+# Python 依赖（在仓库根目录执行）
+pip install -e manager/
 ```
 
 ---
@@ -684,11 +685,12 @@ total_columns: 217    # 终端总宽度（用于检测大小变化）
 
 ### Claude 环境变量
 
-位置：`~/.config/claude-manager/claude_env.conf`
+Claude Manager 会自动继承启动进程的 `ANTHROPIC_*` 环境变量，无需额外配置文件。
 
 ```bash
-ANTHROPIC_BASE_URL=http://localhost:3000/api
-ANTHROPIC_AUTH_TOKEN=your_token_here
+# 在启动 claude-manager 之前设置（或写入 ~/.bashrc）
+export ANTHROPIC_BASE_URL="https://your-api-endpoint/api"
+export ANTHROPIC_AUTH_TOKEN="your_token_here"
 ```
 
 ---
@@ -711,10 +713,10 @@ ANTHROPIC_AUTH_TOKEN=your_token_here
 
 ```bash
 # 安装开发依赖
-pip install -e ".[dev]"
+pip install -e "manager/[dev]"
 
 # 运行测试
-pytest
+cd manager && pytest
 
 # 查看日志
 tail -f ~/.config/claude-manager/logs/app.log
@@ -793,6 +795,7 @@ tail -f /tmp/claude-hook.log
 │   ├── KITTY_SETUP.md          # 详细设置指南
 │   └── COLOR_SCHEME.md         # 颜色方案文档
 │
+├── .gitignore                  # Git 忽略规则
 ├── CLAUDE.md                   # 项目规范
 └── README.md                   # 本文件
 ```
