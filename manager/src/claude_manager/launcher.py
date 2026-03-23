@@ -229,6 +229,17 @@ def launch_split_layout(return_panel_windows: bool = False):
     if not no_remote_control:
         _adjust_panel_sizes(adapter, created_panels, total_columns, saved_layout)
 
+    # 等待 Kitty 窗口尺寸生效，然后强制 tmux 重新适配窗口大小
+    if has_tasks and not no_remote_control:
+        time.sleep(0.3)
+        import subprocess
+        for session_name in [first_session, first_cmd_session]:
+            if session_name:
+                subprocess.run(
+                    ['tmux', 'resize-window', '-A', '-t', session_name],
+                    capture_output=True, timeout=2,
+                )
+
     # 切换焦点回 TUI 窗口
     if not no_remote_control:
         adapter.focus_window(current_window.id)
@@ -261,11 +272,17 @@ def _adjust_panel_sizes(
     num_separators = len(created_panels) - 1
     available_columns = total_columns - (num_separators * SEPARATOR_WIDTH)
 
-    # 判断是否使用保存的布局
+    # 判断是否使用保存的布局（终端大小变化超过 20% 时丢弃旧布局）
+    size_ratio = (
+        abs(total_columns - saved_layout.total_columns) / saved_layout.total_columns
+        if saved_layout.total_columns > 0
+        else 1.0
+    )
     use_saved = (
         saved_layout.middle_columns > 0
         and len(created_panels) >= 3
         and saved_layout.total_columns > 0
+        and size_ratio < 0.2
     )
 
     if use_saved:

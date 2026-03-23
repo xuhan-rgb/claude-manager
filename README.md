@@ -11,9 +11,14 @@
 - **布局预设**: 一键切换专注/开发/测试/监控模式
 - **Kitty + Tmux 集成**: 深度集成 Kitty Remote Control 和 Tmux
 
-## 快速安装
+## 核心特性
 
-本节快速开始，详细步骤见下方"使用方式"章节
+**Claude / Codex 自动状态提示** ⭐
+- Claude 工作中：Tab 变蓝（非聚焦时显示）
+- Claude 完成时：Tab 变红 + 桌面通知（非聚焦时显示）
+- Codex 工作中：Tab 变蓝（独立链路，不改 Claude hook）
+- Codex 当前轮次完成：Tab 变红
+- 查看结果后：自动恢复原色（3 秒）
 
 ---
 
@@ -715,6 +720,23 @@ pytest
 tail -f ~/.config/claude-manager/logs/app.log
 ```
 
+### 调试命令
+
+```bash
+# 查看最近的状态摘要（每15秒自动打印）
+grep "\[状态摘要\]" ~/.config/claude-manager/logs/app.log | tail -3
+
+# 查看状态转换
+grep "\[状态转换\]" ~/.config/claude-manager/logs/app.log | tail -5
+
+# 检查 tmux session
+tmux list-sessions | grep cm-
+
+# Hook 调试
+export CLAUDE_HOOK_DEBUG=1
+tail -f /tmp/claude-hook.log
+```
+
 ---
 
 ## 项目结构
@@ -771,7 +793,6 @@ tail -f ~/.config/claude-manager/logs/app.log
 │   ├── KITTY_SETUP.md          # 详细设置指南
 │   └── COLOR_SCHEME.md         # 颜色方案文档
 │
-├── COMMANDS.md                 # 命令速查
 ├── CLAUDE.md                   # 项目规范
 └── README.md                   # 本文件
 ```

@@ -9,42 +9,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Claude API 配置
-CLAUDE_ENV = {
-    'ANTHROPIC_BASE_URL': 'http://localhost:3000/api',
-    'ANTHROPIC_AUTH_TOKEN': 'cr_d8897e6489ff64846fa44c2a831dbcd242eeef5583b6e12d70ab382ba3b7b88c',
-}
-
 def get_claude_env_config() -> dict:
-    """获取 Claude 环境变量配置
-
-    优先从配置文件读取，否则使用默认值
-    支持格式：
-      KEY=value
-      KEY="value"
-      export KEY=value
-      export KEY="value"
-    """
-    config_file = Path.home() / '.config' / 'claude-manager' / 'claude_env.conf'
-    env = CLAUDE_ENV.copy()
-
-    if config_file.exists():
-        try:
-            for line in config_file.read_text().strip().split('\n'):
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    # 去掉 export 前缀
-                    if line.startswith('export '):
-                        line = line[7:]
-                    key, value = line.split('=', 1)
-                    # 去掉引号
-                    value = value.strip().strip('"\'')
-                    env[key.strip()] = value
-                    logger.info(f"[配置] {key.strip()} = {value[:20]}...")
-        except Exception as e:
-            logger.error(f"[配置] 读取失败: {e}")
-
-    return env
+    """从当前进程环境继承 ANTHROPIC_* 变量"""
+    return {k: v for k, v in os.environ.items() if k.startswith('ANTHROPIC_')}
 
 
 @dataclass
@@ -103,6 +70,9 @@ class TmuxController:
         )
         # 提高历史输出上限（用于滚轮/复制）
         self._run('set-option', '-g', 'history-limit', '50000')
+        # 窗口尺寸跟随最大客户端 + 客户端 resize 时自动适配
+        self._run('set-option', '-g', 'window-size', 'largest')
+        self._run('set-hook', '-g', 'client-resized', 'resize-window -A')
 
     # ========== 任务会话管理 ==========
 
@@ -247,20 +217,16 @@ class TmuxController:
 
         self.configure_session(task_id)
 
-        # 获取 Claude 环境变量并发送
+        # 设置环境变量（session 级别，新进程自动继承）
         claude_env = get_claude_env_config()
         for k, v in claude_env.items():
-            self._run('send-keys', '-t', session, f'export {k}="{v}"')
-            self._run('send-keys', '-t', session, 'Enter')
-            time.sleep(0.05)
+            self._run('set-environment', '-t', session, k, v)
 
-        # 启动 claude
-        self._run('send-keys', '-t', session, command)
-        self._run('send-keys', '-t', session, 'Enter')
+        # 用 respawn-pane 启动 claude（继承 session 环境变量，终端干净）
+        self._run('respawn-pane', '-k', '-t', session, '-c', cwd, command)
 
-        # 启用活动监控和 aggressive-resize（让窗口独立调整大小）
+        # 启用活动监控
         self.enable_activity_monitoring(task_id)
-        self._run('set-window-option', '-t', session, 'aggressive-resize', 'on')
         return True
 
     def create_cmd_session(self, task_id: str, cwd: str, command: str = "bash") -> bool:
@@ -282,7 +248,6 @@ class TmuxController:
             return False
 
         self.configure_session_by_name(session)
-        self._run('set-window-option', '-t', session, 'aggressive-resize', 'on')
         self.ensure_cmd_layout(task_id)
         return True
 
@@ -306,18 +271,14 @@ class TmuxController:
 
         logger.info(f"[restart] session {session} 存在，开始重启")
 
-        # 获取最新的 Claude 环境变量配置
+        # 刷新环境变量（继承当前进程）
         claude_env = get_claude_env_config()
+        for k, v in claude_env.items():
+            self._run('set-environment', '-t', session, k, v)
         logger.info(f"[restart] 环境变量: {list(claude_env.keys())}")
 
-        # 构建带环境变量的启动命令
-        env_exports = '; '.join(f'export {k}="{v}"' for k, v in claude_env.items())
-        full_command = f'{env_exports}; {command}'
-        logger.info(f"[restart] 命令: {full_command[:80]}...")
-
-        # 使用 respawn-pane -k 强制重启
-        logger.info(f"[restart] 执行: tmux respawn-pane -k -t {session}")
-        result = self._run('respawn-pane', '-k', '-t', session, full_command, timeout=5.0)
+        # 使用 respawn-pane -k 强制重启（继承 session 环境变量）
+        result = self._run('respawn-pane', '-k', '-t', session, command, timeout=5.0)
 
         logger.info(f"[restart] returncode={result.returncode}")
         if result.stdout:
@@ -328,9 +289,6 @@ class TmuxController:
         if result.returncode != 0:
             logger.error(f"[restart] respawn-pane 失败")
             return False
-
-        # 启用 aggressive-resize 让窗口独立调整大小
-        self._run('set-window-option', '-t', session, 'aggressive-resize', 'on')
 
         logger.info(f"[restart] Claude 重启成功: {session}")
         return True

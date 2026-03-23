@@ -10,13 +10,14 @@
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
-from textual.widgets import Static, ListItem, ListView, Label, Button, Input, Rule
+from textual.widgets import Static, ListItem, ListView, Label, Button, Input, Rule, OptionList
 
 try:
     from textual.widgets import TextArea
 except Exception:  # pragma: no cover - fallback for older Textual
     TextArea = None
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual import on, work
 
 from .models import Task
@@ -47,6 +48,46 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class PathSuggester(Suggester):
+    """路径自动补全：输入目录路径时提示子目录"""
+
+    def __init__(self):
+        super().__init__(use_cache=False, case_sensitive=True)
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value or not value.startswith("/"):
+            return None
+        p = Path(value)
+        if p.is_dir():
+            # 已输入完整目录，提示第一个子目录
+            if not value.endswith("/"):
+                return value + "/"
+            try:
+                children = sorted(
+                    c.name for c in p.iterdir()
+                    if c.is_dir() and not c.name.startswith(".")
+                )
+                if children:
+                    return value + children[0] + "/"
+            except PermissionError:
+                pass
+        else:
+            # 部分输入，匹配同级目录
+            parent = p.parent
+            prefix = p.name
+            if parent.is_dir():
+                try:
+                    matches = sorted(
+                        c.name for c in parent.iterdir()
+                        if c.is_dir() and c.name.startswith(prefix) and c.name != prefix
+                    )
+                    if matches:
+                        return str(parent / matches[0]) + "/"
+                except PermissionError:
+                    pass
+        return None
+
+
 class TaskItem(ListItem):
     """任务列表项
 
@@ -58,11 +99,12 @@ class TaskItem(ListItem):
     - 待开始: 白色 ○ (pending，还未开始工作)
     """
 
-    def __init__(self, task_data: Task, is_active: bool = False, waiting_confirm: bool = False):
+    def __init__(self, task_data: Task, is_active: bool = False, waiting_confirm: bool = False, index: int = 0):
         super().__init__()
         self.task_data = task_data
         self.is_active = is_active
         self.waiting_confirm = waiting_confirm
+        self.index = index
 
     def compose(self) -> ComposeResult:
         t = self.task_data
@@ -76,19 +118,20 @@ class TaskItem(ListItem):
         else:
             status_suffix = ""
 
-        # 图标和颜色（非选中任务颜色更暗）
+        # 编号 + 图标 + 颜色
+        n = self.index
         if self.is_active:
-            yield Static(f"[green bold]▶ {t.name}[/]{status_suffix}")
+            yield Static(f"[green bold]{n} ▶ {t.name}[/]{status_suffix}")
         elif t.status == 'completed':
-            yield Static(f"[dim red]● {t.name}{status_suffix}[/]")
+            yield Static(f"[dim red]{n} ● {t.name}{status_suffix}[/]")
         elif t.status == 'running' and self.waiting_confirm:
-            yield Static(f"[dim yellow]● {t.name}{status_suffix}[/]")
+            yield Static(f"[dim yellow]{n} ● {t.name}{status_suffix}[/]")
         elif t.status == 'running':
-            yield Static(f"[dim blue]● {t.name}{status_suffix}[/]")
+            yield Static(f"[dim blue]{n} ● {t.name}{status_suffix}[/]")
         elif t.status == 'pending':
-            yield Static(f"[dim]○ {t.name}[/]")
+            yield Static(f"[dim]{n} ○ {t.name}[/]")
         else:
-            yield Static(f"[dim]✗ {t.name}[/]")
+            yield Static(f"[dim]{n} ✗ {t.name}[/]")
 
 
 def generate_task_id(name: str) -> str:
@@ -103,13 +146,18 @@ class NewTaskDialog(ModalScreen):
 
     BINDINGS = [Binding("escape", "cancel", "取消")]
 
+    def __init__(self, existing_names: set[str] | None = None):
+        super().__init__()
+        self._existing_names = existing_names or set()
+
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Label("新建任务", id="dialog-title")
             yield Label("任务名称", classes="field-label")
             yield Input(placeholder="输入任务名称...", id="task-name")
             yield Label("工作目录", classes="field-label")
-            yield Input(placeholder="输入工作目录...", id="task-cwd", value=os.getcwd())
+            yield Input(placeholder="输入工作目录...", id="task-cwd", value=os.getcwd(), suggester=PathSuggester())
+            yield OptionList(id="cwd-options")
             yield Label("任务描述", classes="field-label")
             if TextArea:
                 desc = TextArea(id="task-desc")
@@ -154,6 +202,24 @@ class NewTaskDialog(ModalScreen):
         self._resize_desc()
 
     def on_key(self, event) -> None:
+        cwd_input = self.query_one("#task-cwd", Input)
+        options = self.query_one("#cwd-options", OptionList)
+
+        # CWD 输入框按 ↓ → 弹出目录列表
+        if cwd_input.has_focus and event.key == "down":
+            self._show_dir_options()
+            event.prevent_default()
+            event.stop()
+            return
+
+        # OptionList 按 Escape → 关闭列表回到输入框
+        if options.has_focus and event.key == "escape":
+            options.display = False
+            cwd_input.focus()
+            event.prevent_default()
+            event.stop()
+            return
+
         if TextArea:
             try:
                 desc = self.query_one("#task-desc", TextArea)
@@ -162,6 +228,75 @@ class NewTaskDialog(ModalScreen):
             if desc.has_focus:
                 self._resize_desc()
 
+    def _list_dirs(self, path_str: str) -> list[str]:
+        """列出目录下的子目录"""
+        p = Path(path_str)
+        if not p.is_dir():
+            p = p.parent
+        if not p.is_dir():
+            return []
+        result = []
+        # 父目录（非根目录时）
+        if p.parent != p:
+            result.append(str(p.parent) + "/")
+        try:
+            for c in sorted(p.iterdir()):
+                if c.is_dir() and not c.name.startswith("."):
+                    result.append(str(c) + "/")
+        except PermissionError:
+            pass
+        return result
+
+    def _show_dir_options(self) -> None:
+        """弹出目录列表"""
+        cwd_input = self.query_one("#task-cwd", Input)
+        options = self.query_one("#cwd-options", OptionList)
+        dirs = self._list_dirs(cwd_input.value.strip() or "/")
+        options.clear_options()
+        if not dirs:
+            return
+        parent = Path(cwd_input.value.strip() or "/")
+        if not parent.is_dir():
+            parent = parent.parent
+        for d in dirs:
+            # 父目录显示 ..，其余只显示目录名
+            if d.rstrip("/") == str(parent.parent):
+                options.add_option(f"../ ({d})")
+            else:
+                name = Path(d.rstrip("/")).name
+                options.add_option(f"{name}/")
+        options.display = True
+        options.focus()
+
+    @on(OptionList.OptionSelected, "#cwd-options")
+    def _on_dir_selected(self, event: OptionList.OptionSelected) -> None:
+        """选中目录 → 填回输入框"""
+        cwd_input = self.query_one("#task-cwd", Input)
+        options = self.query_one("#cwd-options", OptionList)
+        label = str(event.option.prompt)
+
+        # 从目录列表还原完整路径
+        current = cwd_input.value.strip() or "/"
+        p = Path(current)
+        if not p.is_dir():
+            p = p.parent
+
+        if label.startswith("../"):
+            # 选择了父目录 → 刷新列表继续浏览
+            selected = str(p.parent) + "/"
+            cwd_input.value = selected
+            cwd_input.cursor_position = len(selected)
+            self._show_dir_options()
+            return
+
+        # 选择了子目录
+        dir_name = label.rstrip("/")
+        selected = str(p / dir_name) + "/"
+        cwd_input.value = selected
+        cwd_input.cursor_position = len(selected)
+        options.display = False
+        cwd_input.focus()
+
     @on(Button.Pressed, "#cancel")
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -169,13 +304,17 @@ class NewTaskDialog(ModalScreen):
     @on(Button.Pressed, "#create")
     def action_create(self) -> None:
         name = self.query_one("#task-name", Input).value.strip()
+        if not name:
+            return
+        if name in self._existing_names:
+            self.notify(f"任务名 '{name}' 已存在", severity="error")
+            return
         cwd = self.query_one("#task-cwd", Input).value.strip() or os.getcwd()
         desc_widget = self.query_one("#task-desc")
         description = desc_widget.text if hasattr(desc_widget, "text") else desc_widget.value
         description = description.strip()
-        if name:
-            task_id = generate_task_id(name)
-            self.dismiss({'task_id': task_id, 'name': name, 'cwd': cwd, 'description': description})
+        task_id = generate_task_id(name)
+        self.dismiss({'task_id': task_id, 'name': name, 'cwd': cwd, 'description': description})
 
 
 class EditTaskDescriptionDialog(ModalScreen):
@@ -267,8 +406,10 @@ class ClaudeManagerApp(App):
 
     CSS = """
     Screen { background: $surface; }
-    #main-container { width: 100%; height: 100%; padding: 0 1; }
-    .section-title { text-style: bold; color: $warning; padding: 1 0 0 0; }
+    #main-container { width: 100%; height: 100%; }
+    #app-header { text-style: bold; background: $primary 15%; padding: 0 1; height: 1; }
+    .section-title { text-style: bold; color: $warning; padding: 1 0 0 1; }
+    Rule { color: $surface-lighten-2; margin: 0 1; }
     ListView { height: auto; margin: 0; padding: 0; background: transparent; }
     ListItem { padding: 0; height: 1; }
     ListItem > Static { padding: 0 1; }
@@ -277,7 +418,8 @@ class ClaudeManagerApp(App):
     #debug-panel { height: 1fr; padding: 0 1; color: $text-muted; }
     #desc-panel { height: auto; padding: 0 1; color: $text-muted; }
     #cwd-panel { height: auto; padding: 0 1; color: $text-muted; }
-    #status-line { dock: bottom; height: 1; background: $surface-darken-1; color: $text-muted; padding: 0 1; }
+    #status-line { dock: bottom; height: 1; background: $primary 15%; color: $text-muted; padding: 0 1; }
+    #cwd-options { display: none; height: auto; max-height: 8; margin: 0 0 1 0; background: $surface-darken-1; }
     #dialog { width: auto; height: auto; padding: 1 2; background: $surface; border: solid $primary; }
     #dialog-title { text-style: bold; text-align: center; padding-bottom: 1; }
     #dialog-buttons { height: auto; align: center middle; padding-top: 1; }
@@ -481,9 +623,13 @@ class ClaudeManagerApp(App):
             status_line = self.query_one("#status-line", Static)
         except Exception:
             return
-        status_line.update(
-            "n:新建 m:描述 r:重启 d:删除 q:退出"
-        )
+        count = len(self.tasks)
+        active = self._get_active_task()
+        if active:
+            info = f"[dim]{count}[/] │ [bold]▶ {active.name}[/]"
+        else:
+            info = f"[dim]{count} tasks[/]"
+        status_line.update(f"{info} │ [dim]n[/]新建 [dim]d[/]删除 [dim]r[/]重启 [dim]q[/]退出")
 
     def _update_desc_panel(self) -> None:
         """更新任务描述显示"""
@@ -634,16 +780,20 @@ class ClaudeManagerApp(App):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-container"):
+            yield Static("Claude Manager", id="app-header")
             yield Static("TASKS", classes="section-title")
             yield ListView(id="tasks-list")
+            yield Rule()
             yield Static("DESC", classes="section-title")
             yield Static("", id="desc-panel")
+            yield Rule()
             yield Static("CWD", classes="section-title")
             yield Static("", id="cwd-panel")
             if self.debug_mode:
+                yield Rule()
                 yield Static("DEBUG", classes="section-title")
                 yield Static("", id="debug-panel")
-        yield Static("n:新建 m:描述 r:重启 d:删除 q:退出", id="status-line")
+        yield Static("", id="status-line")
 
     def on_mount(self) -> None:
         """启动时初始化"""
@@ -689,13 +839,12 @@ class ClaudeManagerApp(App):
         self._suppress_highlight = True
         try:
             tasks_list.clear()
-            for task in self.tasks:
+            for i, task in enumerate(self.tasks, 1):
                 is_active = (task.task_id == self.active_task_id)
-                # 从 debug_state 获取 waiting_confirm 标志
                 debug_data = self._debug_state.get(task.task_id, {})
                 waiting_confirm = debug_data.get('confirm', False)
                 logger.debug(f"[UI更新] {task.task_id}: confirm={waiting_confirm}, debug_data={debug_data}")
-                tasks_list.append(TaskItem(task, is_active, waiting_confirm))
+                tasks_list.append(TaskItem(task, is_active, waiting_confirm, index=i))
             if self.tasks:
                 if self.active_task_id:
                     active_index = next(
@@ -924,7 +1073,8 @@ class ClaudeManagerApp(App):
                     result['cwd'],
                     result.get('description', ''),
                 )
-        self.push_screen(NewTaskDialog(), on_close)
+        existing_names = {t.name for t in self.tasks}
+        self.push_screen(NewTaskDialog(existing_names=existing_names), on_close)
 
     @work(thread=True, exclusive=True, group="tmux")
     def _create_task_async(self, task_id: str, name: str, cwd: str, description: str) -> None:
