@@ -12,7 +12,10 @@ if [ -f "$_cache" ]; then
     read -r _sf < "$_cache"
     if [ -f "$_sf" ]; then
         read -r _cur < "$_sf"
-        case "$_cur" in blue|red|yellow) exit 0 ;; esac
+        case "$_cur" in
+            blue) exit 0 ;;
+            # red/yellow: 用户正在交互，需要清除警告色，fall through 到慢路径
+        esac
     fi
 fi
 
@@ -36,7 +39,6 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 
     TAB_ID="${TAB_INFO%% *}"
     WIN_FOCUSED="${TAB_INFO##* }"
-    [ "$WIN_FOCUSED" = "1" ] && exit 0
 
     sf=$(_state_file "$KITTY_SOCKET" "$TAB_ID")
 
@@ -45,7 +47,24 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 
     current=""
     [ -f "$sf" ] && read -r current < "$sf"
-    case "$current" in blue|red|yellow) exit 0 ;; esac
+
+    # PreToolUse 意味着用户正在交互，清除红/黄警告色
+    case "$current" in red|yellow)
+        kitty @ --to "$KITTY_SOCKET" set-tab-color --match "id:$TAB_ID" \
+            active_bg=NONE active_fg=NONE \
+            inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
+        rm -f "$sf" "$_cache"
+        debug "on-tool-use: cleared $current (user interacting)"
+        # 聚焦 tab 不需要蓝色
+        [ "$WIN_FOCUSED" = "1" ] && exit 0
+        # 非聚焦继续设蓝
+        current=""
+    ;; esac
+
+    # 聚焦 tab 不需要蓝色通知
+    [ "$WIN_FOCUSED" = "1" ] && exit 0
+
+    case "$current" in blue) exit 0 ;; esac
 
     # "none" = 刚被清除的红/黄，不应设蓝色，清理后退出
     if [ "$current" = "none" ]; then

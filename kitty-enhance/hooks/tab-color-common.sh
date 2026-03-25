@@ -193,8 +193,10 @@ ensure_poller() {
             [ -f "$sf" ] && rm -f "$sf"
         done
         rm -f "$pid_f"
-    ) >/dev/null 2>&1 &
+    ) </dev/null >/dev/null 2>&1 &
 
-    echo "$!" > "$pid_file"
-    debug "poller launched (pid $!)"
+    local _poller_pid=$!
+    echo "$_poller_pid" > "$pid_file"
+    disown "$_poller_pid" 2>/dev/null || true
+    debug "poller launched (pid $_poller_pid)"
 }
