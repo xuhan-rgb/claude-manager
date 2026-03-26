@@ -32,10 +32,14 @@ if [ "$_TAB_COLOR" = true ]; then
             local_sf=$(_state_file "$KITTY_SOCKET" "$TAB_ID")
             if [ -f "$local_sf" ]; then
                 read -r _cur < "$local_sf"
-                case "$_cur" in blue|blue-paused)
+                case "$_cur" in blue|blue-paused|red|yellow)
+                    # 聚焦时清除所有颜色状态（包括之前残留的红/黄）
+                    kitty @ --to "$KITTY_SOCKET" set-tab-color --match "id:$TAB_ID" \
+                        active_bg=NONE active_fg=NONE \
+                        inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
                     rm -f "$local_sf"
                     rm -f "/tmp/kitty-tabcache-${WINDOW_ID}"
-                    debug "window focused, cleared blue state"
+                    debug "window focused, cleared $_cur state"
                 ;; esac
             fi
             debug "window focused, skip red"
@@ -57,35 +61,44 @@ source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
 _feishu_register "completed"
 
 # 发送完成通知到飞书（让用户可以继续发指令）
-TAB_TITLE=$(kitty @ --to "$KITTY_SOCKET" ls 2>/dev/null | python3 -c "
-import json, sys
-wid = '$WINDOW_ID'
+export _STOP_SCREEN_TAIL
+_STOP_SCREEN_TAIL=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --extent=screen 2>/dev/null | tail -20 || true)
+
+python3 -c '
+import json, time, sys, os
+
+window_id = os.environ.get("KITTY_WINDOW_ID", "")
+kitty_socket = os.environ.get("KITTY_LISTEN_ON", "")
+screen_tail = os.environ.get("_STOP_SCREEN_TAIL", "")
+
+# 获取 Tab 标题
+tab_title = ""
 try:
-    data = json.load(sys.stdin)
-    for os_win in data:
-        for tab in os_win.get('tabs', []):
-            for win in tab.get('windows', []):
-                if str(win.get('id')) == wid:
-                    print(tab.get('title', ''))
-                    sys.exit(0)
-except: pass
-" 2>/dev/null || true)
+    import subprocess
+    ls_json = subprocess.run(
+        ["kitty", "@", "--to", kitty_socket, "ls"],
+        capture_output=True, text=True, timeout=3
+    ).stdout
+    for os_win in json.loads(ls_json):
+        for tab in os_win.get("tabs", []):
+            for win in tab.get("windows", []):
+                if str(win.get("id")) == window_id:
+                    tab_title = tab.get("title", "")
+except Exception:
+    pass
 
-SCREEN_TAIL=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --extent=screen 2>/dev/null | tail -20 || true)
-
-python3 << PYEOF
-import json, time
 info = {
-    'type': 'completed',
-    'window_id': '$WINDOW_ID',
-    'kitty_socket': '$KITTY_SOCKET',
-    'tab_title': '$TAB_TITLE',
-    'screen_tail': '''$SCREEN_TAIL''',
-    'timestamp': time.time(),
+    "type": "completed",
+    "window_id": window_id,
+    "kitty_socket": kitty_socket,
+    "tab_title": tab_title,
+    "screen_tail": screen_tail,
+    "timestamp": time.time(),
 }
-path = '/tmp/feishu-bridge/\${WINDOW_ID}_completed.json'
-with open(path, 'w') as f:
+path = f"/tmp/feishu-bridge/{window_id}_completed.json"
+os.makedirs("/tmp/feishu-bridge", exist_ok=True)
+with open(path, "w") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)
-PYEOF
+'
 
 exit 0

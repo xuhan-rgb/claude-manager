@@ -129,9 +129,80 @@ codex() {
     command codex "$@"
 }
 
+# 开发标记（toggle * 前缀，支持 Kitty Tab 和 tmux 窗口）
+tab-dev() {
+    if [ -n "$TMUX" ]; then
+        # tmux 窗口
+        local name
+        name=$(tmux display-message -p '#W')
+        if [ "${name#\*}" != "$name" ]; then
+            tmux rename-window "${name#\*}"
+            tmux set-window-option automatic-rename on
+        else
+            tmux rename-window "*${name}"
+            tmux set-window-option automatic-rename off
+        fi
+    elif [ -n "$KITTY_WINDOW_ID" ]; then
+        # Kitty Tab
+        local name
+        name=$(kitty @ --to "$(_kitty_socket)" ls 2>/dev/null | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for w in data:
+    for t in w['tabs']:
+        for win in t['windows']:
+            if win['id'] == $KITTY_WINDOW_ID:
+                print(t.get('title', ''))
+                sys.exit(0)
+" 2>/dev/null)
+        if [ "${name#\*}" != "$name" ]; then
+            kitty @ --to "$(_kitty_socket)" set-tab-title "${name#\*}"
+        else
+            kitty @ --to "$(_kitty_socket)" set-tab-title "*${name}"
+        fi
+    else
+        echo "不在 Kitty 或 tmux 中"
+        return 1
+    fi
+}
+
+# === Tab 颜色自动清除（precmd hook） ===
+# 每次 shell 提示符渲染时检查：如果当前 tab 有红/黄警告色，自动清除
+# 纯内建命令快路径，无子进程开销
+_kitty_tab_color_precmd() {
+    [ -n "${KITTY_WINDOW_ID:-}" ] || return
+    local _cache="/tmp/kitty-tabcache-${KITTY_WINDOW_ID}"
+    [ -f "$_cache" ] || return
+    local _sf
+    read -r _sf < "$_cache"
+    [ -f "$_sf" ] || return
+    local _cur
+    read -r _cur < "$_sf"
+    case "$_cur" in
+        red|yellow)
+            # 提取 tab_id：state file 名为 kitty-tab-{hash}-{tab_id}
+            local _tab_id="${_sf##*-}"
+            kitty @ --to "$(_kitty_socket)" set-tab-color --match "id:$_tab_id" \
+                active_bg=NONE active_fg=NONE \
+                inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
+            rm -f "$_sf" "$_cache"
+            ;;
+    esac
+}
+
+# 注册 precmd hook（兼容 bash 和 zsh）
+if [ -n "${ZSH_VERSION:-}" ]; then
+    autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd _kitty_tab_color_precmd
+elif [ -n "${BASH_VERSION:-}" ]; then
+    if [[ ! "${PROMPT_COMMAND:-}" == *_kitty_tab_color_precmd* ]]; then
+        PROMPT_COMMAND="_kitty_tab_color_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+    fi
+fi
+
 # 别名
 alias tr='tab-rename'
 alias tq='tab-quick'
 alias tp='tab-project'
 alias tc='tab-reset'
 alias ta='tab-alert'
+alias td='tab-dev'
