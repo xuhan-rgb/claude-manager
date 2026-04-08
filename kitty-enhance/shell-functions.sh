@@ -199,6 +199,30 @@ elif [ -n "${BASH_VERSION:-}" ]; then
     fi
 fi
 
+# 锁定窗口（禁用关闭按钮 + Alt+F4，只能通过 kill 关闭）
+# 用法: win-lock        — 锁定当前窗口
+#       win-lock -u     — 解锁当前窗口
+#       win-unlock      — 同上
+win-lock() {
+    [ -n "${WINDOWID:-}" ] || { echo "错误: 无法获取 X11 窗口 ID"; return 1; }
+    command -v xprop >/dev/null 2>&1 || { echo "错误: 需要安装 xprop (apt install x11-utils)"; return 1; }
+
+    if [ "${1:-}" = "-u" ] || [ "${1:-}" = "--unlock" ]; then
+        # 解锁：恢复所有窗口功能
+        xprop -id "$WINDOWID" -f _MOTIF_WM_HINTS 32c \
+            -set _MOTIF_WM_HINTS "0x1, 0x1, 0x0, 0x0, 0x0"
+        echo "窗口已解锁"
+    else
+        # 锁定：MWM_FUNC_ALL(0x1) | MWM_FUNC_CLOSE(0x20) = 0x21
+        # 含义：启用所有功能，但排除关闭
+        xprop -id "$WINDOWID" -f _MOTIF_WM_HINTS 32c \
+            -set _MOTIF_WM_HINTS "0x1, 0x21, 0x0, 0x0, 0x0"
+        echo "窗口已锁定（只能通过 kill 关闭）"
+    fi
+}
+
+win-unlock() { win-lock -u; }
+
 # 别名
 alias tr='tab-rename'
 alias tq='tab-quick'
