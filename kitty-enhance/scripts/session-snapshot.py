@@ -6,6 +6,7 @@ Usage: kitty @ ls | python3 session-snapshot.py > output.session
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime
@@ -44,15 +45,18 @@ def get_launch_command(cmdline: list[str]) -> str | None:
     return " ".join(cmdline)
 
 
-def generate_session(kitty_ls: list[dict]) -> str:
+def generate_session(kitty_ls: list[dict], name: str = "") -> str:
     """Generate Kitty session file content from kitty @ ls output."""
+    if not kitty_ls:
+        return "# No windows found\n"
+
     lines: list[str] = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     os_window = kitty_ls[0]
     tabs = os_window["tabs"]
 
-    lines.append(f"# Saved: {now} | Tabs: {len(tabs)}")
+    lines.append(f"# Session: {name} | Saved: {now} | Tabs: {len(tabs)}")
     lines.append("")
 
     for tab in tabs:
@@ -72,12 +76,12 @@ def generate_session(kitty_ls: list[dict]) -> str:
 
             if i == 0:
                 # First window: use cd + optional launch
-                lines.append(f"cd {cwd}")
+                lines.append(f'cd "{cwd}"')
                 if launch_cmd:
                     lines.append(f"launch {launch_cmd}")
             else:
                 # Additional windows: launch --type=window
-                lines.append(f"cd {cwd}")
+                lines.append(f'cd "{cwd}"')
                 if launch_cmd:
                     lines.append(f"launch --type=window {launch_cmd}")
                 else:
@@ -89,8 +93,12 @@ def generate_session(kitty_ls: list[dict]) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("name", nargs="?", default="")
+    args = parser.parse_args()
+
     data = json.load(sys.stdin)
-    print(generate_session(data))
+    print(generate_session(data, name=args.name))
 
 
 if __name__ == "__main__":

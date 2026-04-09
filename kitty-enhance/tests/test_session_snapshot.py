@@ -49,9 +49,19 @@ class TestSingleTab:
         output = run_snapshot(ls_json)
         assert "new_tab myterm" in output
         assert "layout stack" in output
-        assert "cd /home/user" in output
+        assert 'cd "/home/user"' in output
         # Shell windows should NOT have an explicit launch command
         assert "launch" not in output
+
+    def test_cwd_with_spaces(self):
+        """Paths with spaces should be quoted in cd directives."""
+        ls_json = make_kitty_ls([
+            make_tab("t", "stack", [
+                make_window("/home/user/my project", ["/bin/bash"]),
+            ]),
+        ])
+        output = run_snapshot(ls_json)
+        assert 'cd "/home/user/my project"' in output
 
     def test_claude_tab(self):
         """A tab running claude should produce launch claude."""
@@ -62,7 +72,7 @@ class TestSingleTab:
         ])
         output = run_snapshot(ls_json)
         assert "new_tab Claude Code" in output
-        assert "cd /mnt/data/project" in output
+        assert 'cd "/mnt/data/project"' in output
         assert "launch claude" in output
         # Should NOT preserve flags
         assert "--dangerously-skip-permissions" not in output
@@ -81,7 +91,7 @@ class TestMultiWindow:
         output = run_snapshot(ls_json)
         lines = output.strip().split("\n")
         # First window: cd + launch claude
-        assert "cd /mnt/data/proj" in output
+        assert 'cd "/mnt/data/proj"' in output
         assert "launch claude" in output
         # Extra shell windows use launch --type=window
         type_window_lines = [l for l in lines if "launch --type=window" in l]
@@ -124,8 +134,29 @@ class TestEdgeCases:
             ]),
         ])
         output = run_snapshot(ls_json)
-        assert "cd /tmp" in output
+        assert 'cd "/tmp"' in output
         assert "launch" not in output
+
+    def test_empty_input(self):
+        """Empty kitty @ ls output should return a safe message."""
+        output = run_snapshot("[]")
+        assert "No windows found" in output
+
+    def test_name_argument(self):
+        """Session name should appear in the header comment."""
+        ls_json = make_kitty_ls([
+            make_tab("t", "stack", [
+                make_window("/tmp", ["/bin/bash"]),
+            ]),
+        ])
+        result = subprocess.run(
+            [sys.executable, SCRIPT, "mywork"],
+            input=ls_json,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Session: mywork" in result.stdout
 
     def test_unicode_tab_title(self):
         """Unicode in tab title should be preserved."""
