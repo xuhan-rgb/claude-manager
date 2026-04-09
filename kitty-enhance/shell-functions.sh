@@ -226,56 +226,47 @@ win-lock() {
 
 win-unlock() { win-lock -u; }
 
-# 别名
-alias tr='tab-rename'
-alias tq='tab-quick'
-alias tp='tab-project'
-alias tc='tab-reset'
-alias ta='tab-alert'
-alias td='tab-dev'
 
 # ========================================
-# Kitty Session 保存与恢复
+# Kitty Tab 会话保存与恢复
 # ========================================
 
-_session_dir() {
+_tab_session_dir() {
     echo "${KITTY_ENHANCE_SESSION_DIR:-$HOME/.config/kitty-enhance/sessions}"
 }
 
-_session_snapshot_script() {
+_tab_snapshot_script() {
     echo "${_KITTY_ENHANCE_DIR}/scripts/session-snapshot.py"
 }
 
-# 保存当前 Kitty 会话
-session-save() {
+# 保存当前 Kitty 全部 Tab
+tab-save() {
     local name="${1:-}"
     if [ -z "$name" ]; then
-        echo "用法: session-save <name>"
-        echo "示例: session-save work"
+        echo "用法: tab-save <name>"
+        echo "示例: tab-save work"
         return 1
     fi
 
-    # 检查 Kitty 环境
     if [ -z "${KITTY_WINDOW_ID:-}" ]; then
         echo "错误: 不在 Kitty 终端中"
         return 1
     fi
 
     local dir
-    dir="$(_session_dir)"
+    dir="$(_tab_session_dir)"
     mkdir -p "$dir"
 
     local session_file="$dir/${name}.session"
     local meta_file="$dir/${name}.meta.json"
     local snapshot_script
-    snapshot_script="$(_session_snapshot_script)"
+    snapshot_script="$(_tab_snapshot_script)"
 
     if [ ! -f "$snapshot_script" ]; then
         echo "错误: 找不到 session-snapshot.py: $snapshot_script"
         return 1
     fi
 
-    # 获取 kitty 状态并生成 session 文件
     local kitty_json
     kitty_json=$(kitty @ --to "$(_kitty_socket)" ls 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$kitty_json" ]; then
@@ -295,7 +286,6 @@ session-save() {
         return 1
     fi
 
-    # 生成元数据
     local tab_count
     tab_count=$(grep -c 'new_tab' "$session_file")
     echo "$kitty_json" | python3 -c "
@@ -318,21 +308,21 @@ print()
     echo "  文件: $session_file"
 }
 
-# 恢复 Kitty 会话
-session-restore() {
+# 恢复 Kitty Tab 会话
+tab-restore() {
     local name="${1:-}"
     if [ -z "$name" ]; then
-        echo "用法: session-restore <name>"
-        session-list
+        echo "用法: tab-restore <name>"
+        tab-list
         return 1
     fi
 
     local session_file
-    session_file="$(_session_dir)/${name}.session"
+    session_file="$(_tab_session_dir)/${name}.session"
 
     if [ ! -f "$session_file" ]; then
         echo "错误: session '$name' 不存在"
-        session-list
+        tab-list
         return 1
     fi
 
@@ -340,10 +330,10 @@ session-restore() {
     echo "已恢复: $name (新 Kitty 窗口)"
 }
 
-# 列出所有已保存的 session
-session-list() {
+# 列出所有已保存的 Tab 会话
+tab-list() {
     local dir
-    dir="$(_session_dir)"
+    dir="$(_tab_session_dir)"
 
     if [ ! -d "$dir" ] || ! ls "$dir"/*.meta.json >/dev/null 2>&1; then
         echo "没有已保存的 session"
@@ -362,17 +352,17 @@ print(f\"  {m['name']:<16} {m['tabs']} tabs, {m['windows']} windows  ({m['saved_
     done
 }
 
-# 删除指定 session
-session-delete() {
+# 删除指定 Tab 会话
+tab-delete() {
     local name="${1:-}"
     if [ -z "$name" ]; then
-        echo "用法: session-delete <name>"
-        session-list
+        echo "用法: tab-delete <name>"
+        tab-list
         return 1
     fi
 
     local dir
-    dir="$(_session_dir)"
+    dir="$(_tab_session_dir)"
     local session_file="$dir/${name}.session"
     local meta_file="$dir/${name}.meta.json"
 
@@ -385,8 +375,34 @@ session-delete() {
     echo "已删除: $name"
 }
 
-# Session 别名
-alias ss='session-save'
-alias sr='session-restore'
-alias sl='session-list'
-alias sd='session-delete'
+# 帮助信息
+tab-help() {
+    cat <<'HELP'
+Kitty Tab 管理命令 (kitty-enhance)
+
+  Tab 操作:
+    tab-rename [name]     重命名当前 Tab
+    tab-quick             快速重命名（交互式）
+    tab-project [name]    自动设为 项目名(分支)
+    tab-dev               Toggle 开发标记 (* 前缀)
+
+  Tab 颜色:
+    tab-alert             标记为红色
+    tab-warning           标记为黄色
+    tab-done              标记为绿色
+    tab-reset             重置颜色
+
+  Session 管理:
+    tab-save <name>       保存所有 Tab 状态
+    tab-restore <name>    恢复 Tab（新 Kitty 窗口）
+    tab-list              列出已保存的 session
+    tab-delete <name>     删除 session
+
+  窗口:
+    win-lock              锁定窗口（禁用关闭按钮）
+    win-unlock            解锁窗口
+
+  输入 tab-help 查看本帮助
+HELP
+}
+
