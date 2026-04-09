@@ -4,6 +4,9 @@
 # ========================================
 # ========================================
 
+# 基础目录（从本文件位置推导，支持 repo 和安装后两种场景）
+_KITTY_ENHANCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
 # 使用 kitty 环境变量获取 socket
 _kitty_socket() {
     echo "${KITTY_LISTEN_ON:-unix:@mykitty}"
@@ -230,3 +233,160 @@ alias tp='tab-project'
 alias tc='tab-reset'
 alias ta='tab-alert'
 alias td='tab-dev'
+
+# ========================================
+# Kitty Session 保存与恢复
+# ========================================
+
+_session_dir() {
+    echo "${KITTY_ENHANCE_SESSION_DIR:-$HOME/.config/kitty-enhance/sessions}"
+}
+
+_session_snapshot_script() {
+    echo "${_KITTY_ENHANCE_DIR}/scripts/session-snapshot.py"
+}
+
+# 保存当前 Kitty 会话
+session-save() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "用法: session-save <name>"
+        echo "示例: session-save work"
+        return 1
+    fi
+
+    # 检查 Kitty 环境
+    if [ -z "${KITTY_WINDOW_ID:-}" ]; then
+        echo "错误: 不在 Kitty 终端中"
+        return 1
+    fi
+
+    local dir
+    dir="$(_session_dir)"
+    mkdir -p "$dir"
+
+    local session_file="$dir/${name}.session"
+    local meta_file="$dir/${name}.meta.json"
+    local snapshot_script
+    snapshot_script="$(_session_snapshot_script)"
+
+    if [ ! -f "$snapshot_script" ]; then
+        echo "错误: 找不到 session-snapshot.py: $snapshot_script"
+        return 1
+    fi
+
+    # 获取 kitty 状态并生成 session 文件
+    local kitty_json
+    kitty_json=$(kitty @ --to "$(_kitty_socket)" ls 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$kitty_json" ]; then
+        echo "错误: kitty @ ls 失败（需要 allow_remote_control yes）"
+        return 1
+    fi
+
+    local overwrite=""
+    if [ -f "$session_file" ]; then
+        overwrite=" (覆盖)"
+    fi
+
+    echo "$kitty_json" | python3 "$snapshot_script" "$name" > "$session_file"
+    if [ $? -ne 0 ]; then
+        echo "错误: 生成 session 文件失败"
+        rm -f "$session_file"
+        return 1
+    fi
+
+    # 生成元数据
+    local tab_count
+    tab_count=$(grep -c 'new_tab' "$session_file")
+    echo "$kitty_json" | python3 -c "
+import json, sys
+from datetime import datetime
+data = json.load(sys.stdin)
+tabs = data[0]['tabs']
+windows = sum(len(t['windows']) for t in tabs)
+meta = {
+    'name': sys.argv[1],
+    'saved_at': datetime.now().isoformat(timespec='seconds'),
+    'tabs': len(tabs),
+    'windows': windows,
+}
+json.dump(meta, sys.stdout, ensure_ascii=False, indent=2)
+print()
+" "$name" > "$meta_file"
+
+    echo "已保存${overwrite}: $name ($tab_count tabs)"
+    echo "  文件: $session_file"
+}
+
+# 恢复 Kitty 会话
+session-restore() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "用法: session-restore <name>"
+        session-list
+        return 1
+    fi
+
+    local session_file
+    session_file="$(_session_dir)/${name}.session"
+
+    if [ ! -f "$session_file" ]; then
+        echo "错误: session '$name' 不存在"
+        session-list
+        return 1
+    fi
+
+    kitty --session "$session_file" --detach
+    echo "已恢复: $name (新 Kitty 窗口)"
+}
+
+# 列出所有已保存的 session
+session-list() {
+    local dir
+    dir="$(_session_dir)"
+
+    if [ ! -d "$dir" ] || ! ls "$dir"/*.meta.json >/dev/null 2>&1; then
+        echo "没有已保存的 session"
+        return 0
+    fi
+
+    echo "已保存的 session:"
+    echo ""
+    for meta in "$dir"/*.meta.json; do
+        python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    m = json.load(f)
+print(f\"  {m['name']:<16} {m['tabs']} tabs, {m['windows']} windows  ({m['saved_at']})\")
+" "$meta" 2>/dev/null
+    done
+}
+
+# 删除指定 session
+session-delete() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "用法: session-delete <name>"
+        session-list
+        return 1
+    fi
+
+    local dir
+    dir="$(_session_dir)"
+    local session_file="$dir/${name}.session"
+    local meta_file="$dir/${name}.meta.json"
+
+    if [ ! -f "$session_file" ]; then
+        echo "错误: session '$name' 不存在"
+        return 1
+    fi
+
+    rm -f "$session_file" "$meta_file"
+    echo "已删除: $name"
+}
+
+# Session 别名
+alias ss='session-save'
+alias sr='session-restore'
+alias sl='session-list'
+alias sd='session-delete'
