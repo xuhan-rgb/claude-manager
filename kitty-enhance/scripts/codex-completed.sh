@@ -13,6 +13,7 @@ fi
 
 KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 WINDOW_ID="${KITTY_WINDOW_ID:-}"
+BRIDGE_DIR="$(dirname "$(readlink -f "$0")")/../feishu-bridge"
 [ -z "$WINDOW_ID" ] && exit 0
 
 if [ "$_TAB_COLOR" = true ]; then
@@ -60,57 +61,68 @@ SCREEN_TAIL=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --ex
 export CM_CODEX_TAB_TITLE="$TAB_TITLE"
 export CM_CODEX_SCREEN_TAIL="$SCREEN_TAIL"
 export CM_COMPLETED_MESSAGE="${CM_COMPLETED_MESSAGE:-}"
+export CM_BRIDGE_DIR="$BRIDGE_DIR"
 
 (
 python3 <<'PYEOF'
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
-state_dir = Path("/tmp/feishu-bridge")
+sys.path.insert(0, os.environ['CM_BRIDGE_DIR'])
+from terminal_registry import build_terminal_id, load_registry, save_registry, socket_to_label
+
+state_dir = Path('/tmp/feishu-bridge')
 state_dir.mkdir(parents=True, exist_ok=True)
 
-window_id = os.environ.get("KITTY_WINDOW_ID", "")
-if not window_id:
+window_id = os.environ.get('KITTY_WINDOW_ID', '')
+kitty_socket = os.environ.get('KITTY_LISTEN_ON', '')
+if not window_id or not kitty_socket:
     raise SystemExit(0)
+terminal_id = build_terminal_id(window_id, kitty_socket)
 
-registry_path = state_dir / "registry.json"
-try:
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-except Exception:
-    registry = {}
+registry = load_registry()
+old = registry.get(terminal_id, {})
+cwd = os.environ.get('PWD', '')
+tab_title = os.environ.get('CM_CODEX_TAB_TITLE', '') or old.get('tab_title') or (cwd.rsplit('/', 1)[-1] if cwd else '')
 
-old = registry.get(window_id, {})
-cwd = os.environ.get("PWD", "")
-tab_title = os.environ.get("CM_CODEX_TAB_TITLE", "") or old.get("tab_title") or (cwd.rsplit("/", 1)[-1] if cwd else "")
-
-registry[window_id] = {
-    "window_id": window_id,
-    "kitty_socket": os.environ.get("KITTY_LISTEN_ON", "") or old.get("kitty_socket", ""),
-    "tab_title": tab_title,
-    "cwd": cwd or old.get("cwd", ""),
-    "registered_at": old.get("registered_at", time.time()),
-    "last_activity": time.time(),
-    "status": "completed",
-    "agent_kind": "codex",
-    "agent_name": "Codex",
+registry[terminal_id] = {
+    'terminal_id': terminal_id,
+    'window_id': window_id,
+    'kitty_socket': kitty_socket or old.get('kitty_socket', ''),
+    'socket_label': socket_to_label(kitty_socket or old.get('kitty_socket', '')),
+    'tab_title': tab_title,
+    'cwd': cwd or old.get('cwd', ''),
+    'registered_at': old.get('registered_at', time.time()),
+    'last_activity': time.time(),
+    'status': 'completed',
+    'agent_kind': 'codex',
+    'agent_name': 'Codex',
 }
-registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+save_registry(registry)
 
 completed = {
-    "type": "completed",
-    "window_id": window_id,
-    "kitty_socket": os.environ.get("KITTY_LISTEN_ON", ""),
-    "tab_title": tab_title,
-    "screen_tail": os.environ.get("CM_CODEX_SCREEN_TAIL", ""),
-    "last_agent_message": os.environ.get("CM_COMPLETED_MESSAGE", ""),
-    "agent_kind": "codex",
-    "agent_name": "Codex",
-    "timestamp": time.time(),
+    'type': 'completed',
+    'terminal_id': terminal_id,
+    'window_id': window_id,
+    'kitty_socket': kitty_socket,
+    'tab_title': tab_title,
+    'screen_tail': os.environ.get('CM_CODEX_SCREEN_TAIL', ''),
+    'last_agent_message': os.environ.get('CM_COMPLETED_MESSAGE', ''),
+    'agent_kind': 'codex',
+    'agent_name': 'Codex',
+    'timestamp': time.time(),
 }
 
-path = state_dir / f"{window_id}_completed.json"
-path.write_text(json.dumps(completed, ensure_ascii=False, indent=2), encoding="utf-8")
+path = state_dir / f'{terminal_id}_completed.json'
+legacy_path = state_dir / f'{window_id}_completed.json'
+path.write_text(json.dumps(completed, ensure_ascii=False, indent=2), encoding='utf-8')
+if legacy_path != path:
+    try:
+        legacy_path.unlink()
+    except FileNotFoundError:
+        pass
 PYEOF
 ) 200>/tmp/feishu-bridge/.registry.lock

@@ -1,6 +1,5 @@
 #!/bin/bash
-# Backward-compatible wrapper for the standalone agent terminal manager.
-# Usage: claude-manager-tabs list / claude-manager-tabs focus <terminal_id>
+# Wrapper for standalone agent terminal manager using Python 3.10
 PYTHONPATH="/mnt/data/claude-manager/manager/src" \
   /home/qwer/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/bin/python3.10 \
   -c "

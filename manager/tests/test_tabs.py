@@ -115,9 +115,10 @@ class TestLoadRegistry:
         p.write_text(json.dumps(payload))
         monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
         data = load_registry()
-        assert "42" in data
-        assert data["42"]["tab_title"] == "my-tab"
-        assert data["42"]["status"] == "working"
+        assert list(data) == ["42@mykitty-1"]
+        assert data["42@mykitty-1"]["tab_title"] == "my-tab"
+        assert data["42@mykitty-1"]["status"] == "working"
+        assert data["42@mykitty-1"]["terminal_id"] == "42@mykitty-1"
 
     def test_filters_out_non_dict_values(self, tmp_path, monkeypatch):
         p = tmp_path / "reg.json"
@@ -128,9 +129,28 @@ class TestLoadRegistry:
         }))
         monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
         data = load_registry()
-        assert "valid" in data
+        assert list(data) == ["1@m"]
         assert "bogus_string" not in data
         assert "bogus_list" not in data
+
+    def test_normalizes_legacy_window_id_keys(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        payload = {
+            "42": {
+                "window_id": "42",
+                "kitty_socket": "unix:@mykitty-9",
+                "tab_title": "legacy",
+                "cwd": "/tmp",
+                "status": "working",
+                "last_activity": 123.0,
+                "registered_at": 120.0,
+            }
+        }
+        p.write_text(json.dumps(payload))
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        data = load_registry()
+        assert list(data) == ["42@mykitty-9"]
+        assert data["42@mykitty-9"]["terminal_id"] == "42@mykitty-9"
 
 
 class TestGetAliveWindows:
@@ -341,6 +361,44 @@ class TestListAliveTerminals:
         assert len(socket_calls) == 2
         assert set(socket_calls) == {"unix:@mykitty-A", "unix:@mykitty-B"}
 
+    def test_keeps_same_window_id_from_different_sockets(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "1@mykitty-A": {
+                "terminal_id": "1@mykitty-A",
+                "window_id": "1",
+                "kitty_socket": "unix:@mykitty-A",
+                "tab_title": "a",
+                "cwd": "/proj/a",
+                "status": "working",
+                "agent_kind": "claude",
+                "registered_at": 100.0,
+                "last_activity": 200.0,
+            },
+            "1@mykitty-B": {
+                "terminal_id": "1@mykitty-B",
+                "window_id": "1",
+                "kitty_socket": "unix:@mykitty-B",
+                "tab_title": "b",
+                "cwd": "/proj/b",
+                "status": "waiting",
+                "agent_kind": "codex",
+                "registered_at": 100.0,
+                "last_activity": 300.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+
+        monkeypatch.setattr(
+            registry_module,
+            "_get_alive_windows",
+            lambda socket: {"1": {"tab_title": socket[-1].lower(), "cwd": "/"}},
+        )
+
+        result = list_alive_terminals()
+        assert [t.terminal_id for t in result] == ["1@mykitty-B", "1@mykitty-A"]
+        assert [t.window_id for t in result] == ["1", "1"]
+
     def test_skips_entries_without_socket(self, tmp_path, monkeypatch):
         p = tmp_path / "reg.json"
         _write_registry(p, {
@@ -539,6 +597,7 @@ class TestListCommand:
         data = json.loads(out)
         assert len(data) == 1
         assert data[0]["window_id"] == "42"
+        assert data[0]["terminal_id"] == "42@mykitty-1"
         assert data[0]["tab_title"] == "hello"
         assert data[0]["project_name"] == "my-project"
         assert "idle_seconds" in data[0]
@@ -548,14 +607,8 @@ class TestFocusCommand:
     def test_focus_success_prints_tab_title(self, capsys, monkeypatch):
         monkeypatch.setattr(
             cli_module,
-            "load_registry",
-            lambda: {
-                "42": {
-                    "window_id": "42",
-                    "kitty_socket": "unix:@mykitty-1",
-                    "tab_title": "my-tab",
-                }
-            },
+            "list_alive_terminals",
+            lambda: [_make_terminal(window_id="42", tab_title="my-tab")],
         )
         monkeypatch.setattr(cli_module, "focus_window", lambda s, w: (True, ""))
         rc = run(["focus", "42"])
@@ -594,14 +647,8 @@ class TestFocusCommand:
     def test_focus_kitten_failure_propagates_error(self, capsys, monkeypatch):
         monkeypatch.setattr(
             cli_module,
-            "load_registry",
-            lambda: {
-                "42": {
-                    "window_id": "42",
-                    "kitty_socket": "unix:@mykitty-1",
-                    "tab_title": "my-tab",
-                }
-            },
+            "list_alive_terminals",
+            lambda: [_make_terminal(window_id="42", tab_title="my-tab")],
         )
         monkeypatch.setattr(
             cli_module, "focus_window", lambda s, w: (False, "no matching window")
@@ -610,6 +657,19 @@ class TestFocusCommand:
         assert rc == 1
         err = capsys.readouterr().err
         assert "no matching window" in err
+
+    def test_focus_rejects_ambiguous_window_id(self, capsys, monkeypatch):
+        t1 = _make_terminal(window_id="42", terminal_id="42@mykitty-a", tab_title="alpha")
+        t2 = _make_terminal(window_id="42", terminal_id="42@mykitty-b", tab_title="beta")
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [t1, t2])
+        monkeypatch.setattr(cli_module, "load_registry", lambda: {})
+
+        rc = run(["focus", "42"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "不唯一" in err
+        assert "42@mykitty-a" in err
+        assert "42@mykitty-b" in err
 
 
 class TestMainCliIntegration:

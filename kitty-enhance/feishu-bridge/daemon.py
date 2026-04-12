@@ -4,7 +4,7 @@
 功能：
 - 监控权限弹窗，超时发飞书通知，用户回复 y/n 自动操作终端
 - 终端注册表：自动发现和管理多个 Claude 终端
-- 飞书指令：ls 列表、#N 详情、#N 进度、#N 指令
+- 飞书指令：ls 列表、#terminal_id 详情、#terminal_id 进度、#terminal_id 指令
 
 启动: python daemon.py
 停止: python daemon.py stop
@@ -30,8 +30,8 @@ from feishu_client import FeishuClient
 from kitty_responder import clear_screen, get_terminal_screen, send_key, send_keystroke
 from terminal_registry import (
     cleanup_all_kitty,
-    get_terminal_info,
     load_registry,
+    resolve_terminal_selector,
     scan_all_kitty,
     scan_and_register,
     STATUS_TEXT,
@@ -216,7 +216,7 @@ class FeishuBridgeDaemon:
         self.cleanup_interval = hub_cfg["registry_cleanup_interval"]
         self.max_screen_lines = hub_cfg["max_screen_lines"]
         self.command_max_length = hub_cfg["command_max_length"]
-        self._pending_commands = {}  # {feishu_msg_id: {"window_id", "text", "timestamp"}}
+        self._pending_commands = {}  # {feishu_msg_id: {"terminal_id", "text", "timestamp"}}
         self._running = True
         self._start_time = time.time()  # 守护进程启动时间
 
@@ -444,8 +444,8 @@ class FeishuBridgeDaemon:
 
         return matched_file, matched_pending
 
-    def _find_pending_by_window(self, window_id: str) -> tuple[str | None, dict | None]:
-        """通过 window_id 精确查找已通知的 pending 文件"""
+    def _find_pending_by_terminal(self, selector: str) -> tuple[str | None, dict | None]:
+        """通过 terminal_id（或兼容的 window_id）精确查找已通知的 pending 文件"""
         skip_files = {"daemon.pid", "registry.json"}
         pattern = os.path.join(STATE_DIR, "*.json")
         for filepath in glob.glob(pattern):
@@ -457,16 +457,43 @@ class FeishuBridgeDaemon:
                     pending = json.load(f)
             except (json.JSONDecodeError, FileNotFoundError):
                 continue
-            if pending.get("window_id") == window_id and pending.get("notified"):
+            pending_terminal_id = pending.get("terminal_id")
+            if pending.get("notified") and (
+                pending_terminal_id == selector or pending.get("window_id") == selector
+            ):
                 return filepath, pending
         return None, None
+
+    @staticmethod
+    def _terminal_display_id(info: dict | None, fallback: str = "?") -> str:
+        if not info:
+            return fallback
+        return info.get("terminal_id") or info.get("window_id") or fallback
+
+    def _resolve_terminal_or_reply(self, selector: str) -> dict | None:
+        info, ambiguous = resolve_terminal_selector(selector)
+        if info:
+            return info
+
+        if ambiguous:
+            suggestions = "\n".join(
+                f"- #{self._terminal_display_id(item)}  {item.get('tab_title') or item.get('cwd') or '?'}"
+                for item in ambiguous
+            )
+            self.feishu.send_text_message(
+                f"⚠️ 终端 #{selector} 不唯一，请使用完整 terminal_id：\n{suggestions}"
+            )
+            return None
+
+        self.feishu.send_text_message(f"❌ 终端 #{selector} 不存在或已关闭")
+        return None
 
     def _handle_parent_reply(self, text: str, parent_id: str) -> bool:
         """处理回复链中的消息（优先于普通命令解析）"""
         if not parent_id:
             return False
 
-        # 终端指令确认（#N 文本在忙碌状态时触发）
+        # 终端指令确认（#terminal_id 文本在忙碌状态时触发）
         if parent_id in self._pending_commands:
             lower = text.lower()
             if lower in ("y", "n", "yes", "no", "是", "否"):
@@ -570,7 +597,7 @@ class FeishuBridgeDaemon:
         with open(filepath, "r", encoding="utf-8") as f:
             completed = json.load(f)
 
-        window_id = completed.get("window_id", "?")
+        window_id = completed.get("terminal_id") or completed.get("window_id", "?")
         tab_title = completed.get("tab_title", "")
         screen_tail = completed.get("screen_tail", "")
         last_agent_message = completed.get("last_agent_message", "")
@@ -598,12 +625,12 @@ class FeishuBridgeDaemon:
             "elements": [
                 {"tag": "markdown", "content": f"```\n{content}\n```"},
                 {"tag": "hr"},
-                {"tag": "markdown", "content": "回复 **#N <指令>** 继续对话"},
+                {"tag": "markdown", "content": "回复 **#terminal_id <指令>** 继续对话"},
             ],
         }, ensure_ascii=False)
 
         self.feishu._send_card(card)
-        logger.info("发送完成通知: window=%s, lines=%d", window_id, len(lines))
+        logger.info("发送完成通知: terminal=%s, lines=%d", window_id, len(lines))
 
         # 删除完成通知文件
         os.remove(filepath)
@@ -684,24 +711,24 @@ class FeishuBridgeDaemon:
             elif cmd_type == "list_terminals":
                 self._handle_list_terminals(cmd.get("detail", False))
             elif cmd_type == "permission_reply":
-                # 安全规则：standalone y/n 必须回复卡片或用 #N 前缀
+                # 安全规则：standalone y/n 必须回复卡片或用 #terminal_id 前缀
                 self.feishu.send_text_message(
-                    "⚠️ 请**回复对应卡片**或指定终端 **#N y** / **#N n**"
+                    "⚠️ 请**回复对应卡片**或指定终端 **#terminal_id y** / **#terminal_id n**"
                 )
             elif cmd_type == "help":
                 self.feishu.send_text_message(
                     "📖 **指令速查**\n\n"
                     "**查看**\n"
                     "　**ls**　终端列表　|　**ls -l**　含屏幕预览\n"
-                    "　**#N**　终端详情　|　**#N 进度**　屏幕内容\n\n"
-                    "**操作**（↩️ 回复卡片 或 #N 指定终端）\n"
-                    "　**#N y / n**　权限确认\n"
-                    "　**#N 1 / 2 / 3**　选择选项\n"
-                    "　**#N 4 文字**　输入型选项\n"
-                    "　**#N 文本**　发送指令到终端\n\n"
+                    "　**#terminal_id**　终端详情　|　**#terminal_id 进度**　屏幕内容\n\n"
+                    "**操作**（↩️ 回复卡片 或 #terminal_id 指定终端）\n"
+                    "　**#terminal_id y / n**　权限确认\n"
+                    "　**#terminal_id 1 / 2 / 3**　选择选项\n"
+                    "　**#terminal_id 4 文字**　输入型选项\n"
+                    "　**#terminal_id 文本**　发送指令到终端\n\n"
                     "**控制**\n"
-                    "　**#N esc**　发送 Esc　|　**#N ctrl+c**　中断\n"
-                    "　**#N clear**　清屏　|　**?**　本帮助"
+                    "　**#terminal_id esc**　发送 Esc　|　**#terminal_id ctrl+c**　中断\n"
+                    "　**#terminal_id clear**　清屏　|　**?**　本帮助"
                 )
             elif cmd_type == "terminal_detail":
                 self._handle_terminal_detail(cmd["window_id"])
@@ -732,7 +759,7 @@ class FeishuBridgeDaemon:
 
         来源：
         - 回复卡片（parent_id 非空）
-        - #N 前缀（parent_id 为空）
+        - #terminal_id 前缀（parent_id 为空）
 
         格式：
         - "1"         → 直接 Enter（已在第 1 项）
@@ -871,7 +898,13 @@ class FeishuBridgeDaemon:
         """处理终端列表查询"""
         # 先用注册表现有数据快速响应
         registry = load_registry()
-        terminals = sorted(registry.values(), key=lambda t: int(t.get("window_id", 0)))
+        terminals = sorted(
+            registry.values(),
+            key=lambda t: (
+                int(t.get("window_id", 0)),
+                t.get("terminal_id") or "",
+            ),
+        )
 
         if detail:
             # ls -l: 先发"正在抓取"，后台异步抓取每个终端内容
@@ -894,6 +927,7 @@ class FeishuBridgeDaemon:
         results = []
         for t in terminals:
             wid = t.get("window_id")
+            terminal_id = t.get("terminal_id") or wid
             socket = t.get("kitty_socket") or self._detect_socket()
             if not socket:
                 continue
@@ -903,14 +937,14 @@ class FeishuBridgeDaemon:
             screen = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]", "", screen)
             lines = [l for l in screen.strip().split("\n") if l.strip()][-5:]
             preview = "\n".join(lines) if lines else "(无内容)"
-            results.append({"window_id": wid, "preview": preview})
+            results.append({"terminal_id": terminal_id, "preview": preview})
 
         # 发送详细列表
         registry = load_registry()
         lines = []
         claude_only = all((t.get("agent_kind") or "claude") == "claude" for t in terminals)
         for t in terminals:
-            wid = t.get("window_id")
+            wid = t.get("terminal_id") or t.get("window_id")
             icon = "🟢" if t.get("status") == "working" else "🔴" if t.get("status") == "completed" else "⚪"
             title = t.get("tab_title") or t.get("cwd", "").split("/")[-1] or "?"
             agent_name = t.get("agent_name") or "Claude"
@@ -918,7 +952,7 @@ class FeishuBridgeDaemon:
             # 找 preview
             preview = ""
             for r in results:
-                if r["window_id"] == wid:
+                if r["terminal_id"] == wid:
                     preview = r["preview"]
                     break
             lines.append(f"{icon} **#{wid}** {agent_prefix}{title}")
@@ -950,33 +984,27 @@ class FeishuBridgeDaemon:
         except Exception:
             logger.debug("后台刷新注册表异常")
 
-    def _handle_terminal_detail(self, window_id: str):
+    def _handle_terminal_detail(self, selector: str):
         """处理终端详情查询（异步）"""
-        info = get_terminal_info(window_id)
+        info = self._resolve_terminal_or_reply(selector)
         if not info:
-            threading.Thread(
-                target=self.feishu.send_text_message,
-                args=(f"❌ 终端 #{window_id} 不存在或已关闭",),
-                daemon=True,
-            ).start()
             return
+
+        display_id = self._terminal_display_id(info, selector)
 
         def do_send():
             self.feishu.send_terminal_detail(info)
-            logger.info("发送终端详情: window=%s", window_id)
+            logger.info("发送终端详情: terminal=%s", display_id)
         threading.Thread(target=do_send, daemon=True).start()
 
-    def _handle_terminal_screen(self, window_id: str):
+    def _handle_terminal_screen(self, selector: str):
         """处理终端进度/屏幕查看（异步）"""
-        info = get_terminal_info(window_id)
+        info = self._resolve_terminal_or_reply(selector)
         if not info:
-            threading.Thread(
-                target=self.feishu.send_text_message,
-                args=(f"❌ 终端 #{window_id} 不存在或已关闭",),
-                daemon=True,
-            ).start()
             return
 
+        display_id = self._terminal_display_id(info, selector)
+        target_window_id = info.get("window_id", selector)
         socket = info.get("kitty_socket") or self._detect_socket()
         if not socket:
             threading.Thread(
@@ -987,22 +1015,19 @@ class FeishuBridgeDaemon:
             return
 
         def do_send():
-            screen = get_terminal_screen(window_id, socket, self.max_screen_lines)
-            self.feishu.send_terminal_screen(window_id, screen)
-            logger.info("发送终端屏幕: window=%s", window_id)
+            screen = get_terminal_screen(target_window_id, socket, self.max_screen_lines)
+            self.feishu.send_terminal_screen(display_id, screen)
+            logger.info("发送终端屏幕: terminal=%s", display_id)
         threading.Thread(target=do_send, daemon=True).start()
 
-    def _handle_terminal_key(self, window_id: str, key: str):
+    def _handle_terminal_key(self, selector: str, key: str):
         """处理向终端发送键盘事件"""
-        info = get_terminal_info(window_id)
+        info = self._resolve_terminal_or_reply(selector)
         if not info:
-            threading.Thread(
-                target=self.feishu.send_text_message,
-                args=(f"❌ 终端 #{window_id} 不存在或已关闭",),
-                daemon=True,
-            ).start()
             return
 
+        display_id = self._terminal_display_id(info, selector)
+        target_window_id = info.get("window_id", selector)
         socket = info.get("kitty_socket") or self._detect_socket()
         if not socket:
             threading.Thread(
@@ -1012,25 +1037,22 @@ class FeishuBridgeDaemon:
             ).start()
             return
 
-        send_key(window_id, key, socket)
-        logger.info("发送键盘事件: window=%s, key=%s", window_id, key)
+        send_key(target_window_id, key, socket)
+        logger.info("发送键盘事件: terminal=%s, key=%s", display_id, key)
         threading.Thread(
             target=self.feishu.send_text_message,
-            args=(f"✅ 已发送 {key} 到终端 #{window_id}",),
+            args=(f"✅ 已发送 {key} 到终端 #{display_id}",),
             daemon=True,
         ).start()
 
-    def _handle_terminal_clear(self, window_id: str):
+    def _handle_terminal_clear(self, selector: str):
         """处理清屏指令"""
-        info = get_terminal_info(window_id)
+        info = self._resolve_terminal_or_reply(selector)
         if not info:
-            threading.Thread(
-                target=self.feishu.send_text_message,
-                args=(f"❌ 终端 #{window_id} 不存在或已关闭",),
-                daemon=True,
-            ).start()
             return
 
+        display_id = self._terminal_display_id(info, selector)
+        target_window_id = info.get("window_id", selector)
         socket = info.get("kitty_socket") or self._detect_socket()
         if not socket:
             threading.Thread(
@@ -1040,24 +1062,26 @@ class FeishuBridgeDaemon:
             ).start()
             return
 
-        clear_screen(window_id, socket)
-        logger.info("清屏: window=%s", window_id)
+        clear_screen(target_window_id, socket)
+        logger.info("清屏: terminal=%s", display_id)
         threading.Thread(
             target=self.feishu.send_text_message,
-            args=(f"✅ 已清空终端 #{window_id} 屏幕",),
+            args=(f"✅ 已清空终端 #{display_id} 屏幕",),
             daemon=True,
         ).start()
 
-    def _handle_terminal_command(self, window_id: str, text: str):
+    def _handle_terminal_command(self, selector: str, text: str):
         """处理向终端发送指令
 
         安全规则：如果该终端有活跃的 pending 请求，优先作为 pending 回复处理，
         而非直接发送到终端（避免干扰权限弹窗/选择弹窗）。
         """
         # ── 优先检查：该终端是否有活跃 pending ──
-        pending_file, pending_data = self._find_pending_by_window(window_id)
+        pending_file, pending_data = self._find_pending_by_terminal(selector)
         if pending_file and pending_data:
             mode = self._detect_pending_mode(pending_data)
+            target_window_id = pending_data.get("window_id", selector)
+            display_id = pending_data.get("terminal_id") or pending_data.get("window_id") or selector
             if mode == "selection":
                 return self._handle_selection_reply(
                     text, "", pending_file, pending_data
@@ -1068,18 +1092,18 @@ class FeishuBridgeDaemon:
                         os.remove(pending_file)
                     except FileNotFoundError:
                         pass
-                    self.feishu.send_text_message(f"❌ 已取消终端 #{window_id} 的输入")
+                    self.feishu.send_text_message(f"❌ 已取消终端 #{display_id} 的输入")
                     return
                 socket = pending_data.get("kitty_socket") or self.kitty_socket
-                send_keystroke(window_id, text, socket)
+                send_keystroke(target_window_id, text, socket)
                 time.sleep(0.15)
-                send_keystroke(window_id, "\r", socket)
+                send_keystroke(target_window_id, "\r", socket)
                 try:
                     os.remove(pending_file)
                 except FileNotFoundError:
                     pass
-                self.feishu.send_text_message(f"✅ 已发送文本到终端 #{window_id}")
-                logger.info("文本输入（#N）: window=%s, text=%s", window_id, text[:60])
+                self.feishu.send_text_message(f"✅ 已发送文本到终端 #{display_id}")
+                logger.info("文本输入（#terminal_id）: terminal=%s, text=%s", display_id, text[:60])
                 return
             elif mode == "permission":
                 lower = text.lower()
@@ -1087,31 +1111,27 @@ class FeishuBridgeDaemon:
                     is_allow = lower in ("y", "yes", "是")
                     socket = pending_data.get("kitty_socket") or self.kitty_socket
                     keystroke = "\r" if is_allow else "\x1b"
-                    send_keystroke(window_id, keystroke, socket)
+                    send_keystroke(target_window_id, keystroke, socket)
                     action = "✅ 已允许" if is_allow else "❌ 已拒绝"
                     try:
                         os.remove(pending_file)
                     except FileNotFoundError:
                         pass
-                    self.feishu.send_text_message(f"{action} 终端 #{window_id}")
-                    logger.info("权限回复（#N）: window=%s, action=%s", window_id, action)
+                    self.feishu.send_text_message(f"{action} 终端 #{display_id}")
+                    logger.info("权限回复（#terminal_id）: terminal=%s, action=%s", display_id, action)
                     return
                 else:
                     self.feishu.send_text_message(
-                        f"⚠️ 终端 #{window_id} 等待权限确认，请发送 **#{window_id} y** 或 **#{window_id} n**"
+                        f"⚠️ 终端 #{display_id} 等待权限确认，请发送 **#{display_id} y** 或 **#{display_id} n**"
                     )
                     return
 
         # ── 正常终端指令流程 ──
-        info = get_terminal_info(window_id)
+        info = self._resolve_terminal_or_reply(selector)
         if not info:
-            threading.Thread(
-                target=self.feishu.send_text_message,
-                args=(f"❌ 终端 #{window_id} 不存在或已关闭",),
-                daemon=True,
-            ).start()
-            logger.warning("终端不存在: window=%s", window_id)
             return
+
+        display_id = self._terminal_display_id(info, selector)
 
         if len(text) > self.command_max_length:
             threading.Thread(
@@ -1119,7 +1139,7 @@ class FeishuBridgeDaemon:
                 args=(f"⚠️ 指令过长（最大 {self.command_max_length} 字符）",),
                 daemon=True,
             ).start()
-            logger.warning("指令过长: window=%s, len=%d", window_id, len(text))
+            logger.warning("指令过长: terminal=%s, len=%d", display_id, len(text))
             return
 
         # 忙碌状态 → 发确认消息（异步），暂存指令
@@ -1128,7 +1148,7 @@ class FeishuBridgeDaemon:
             status_cn = STATUS_TEXT.get(status, status)
             warning = "⚠️ 有权限弹窗，发送可能干扰确认" if status == "waiting" else ""
             msg_text = (
-                f"⚠️ 终端 #{window_id} 正在{status_cn}\n"
+                f"⚠️ 终端 #{display_id} 正在{status_cn}\n"
                 f"待发指令: {text[:100]}\n"
                 f"{warning}\n"
                 f"回复 **y** 强制发送 | 回复 **n** 取消"
@@ -1138,17 +1158,17 @@ class FeishuBridgeDaemon:
                 msg_id = self.feishu.send_text_message(msg_text)
                 if msg_id:
                     self._pending_commands[msg_id] = {
-                        "window_id": window_id,
+                        "terminal_id": display_id,
                         "text": text,
                         "timestamp": time.time(),
                     }
-                    logger.info("指令待确认: window=%s, status=%s", window_id, status)
+                    logger.info("指令待确认: terminal=%s, status=%s", display_id, status)
                 else:
-                    logger.error("发送确认消息失败: window=%s", window_id)
+                    logger.error("发送确认消息失败: terminal=%s", display_id)
             threading.Thread(target=do_send, daemon=True).start()
             return
 
-        self._send_command_to_terminal(window_id, text, info)
+        self._send_command_to_terminal(display_id, text, info)
 
     def _execute_pending_command(self, answer: str, parent_id: str):
         """用户确认后执行暂存的终端指令"""
@@ -1160,18 +1180,18 @@ class FeishuBridgeDaemon:
         is_confirm = answer in ("y", "yes", "是")
         if not is_confirm:
             self.feishu.reply_message(parent_id, "❌ 已取消发送")
-            logger.info("用户取消指令: window=%s", pending["window_id"])
+            logger.info("用户取消指令: terminal=%s", pending["terminal_id"])
             return
 
-        info = get_terminal_info(pending["window_id"])
+        info = self._resolve_terminal_or_reply(pending["terminal_id"])
         if not info:
-            self.feishu.reply_message(parent_id, f"❌ 终端 #{pending['window_id']} 已关闭")
+            self.feishu.reply_message(parent_id, f"❌ 终端 #{pending['terminal_id']} 已关闭")
             return
 
-        self._send_command_to_terminal(pending["window_id"], pending["text"], info)
+        self._send_command_to_terminal(pending["terminal_id"], pending["text"], info)
         self.feishu.reply_message(parent_id, "✅ 已强制发送")
 
-    def _send_command_to_terminal(self, window_id: str, text: str, info: dict):
+    def _send_command_to_terminal(self, display_id: str, text: str, info: dict):
         """实际发送指令到终端"""
         socket = info.get("kitty_socket") or self._detect_socket()
         if not socket:
@@ -1180,17 +1200,18 @@ class FeishuBridgeDaemon:
                 args=("❌ 无法连接 kitty 终端",),
                 daemon=True,
             ).start()
-            logger.error("无可用 socket: window=%s", window_id)
+            logger.error("无可用 socket: terminal=%s", display_id)
             return
 
-        send_keystroke(window_id, text, socket)
+        target_window_id = info.get("window_id", display_id)
+        send_keystroke(target_window_id, text, socket)
         time.sleep(0.15)
-        send_keystroke(window_id, "\r", socket)
-        logger.info("发送指令到终端: window=%s, text=%s", window_id, text[:50])
+        send_keystroke(target_window_id, "\r", socket)
+        logger.info("发送指令到终端: terminal=%s, text=%s", display_id, text[:50])
         # 飞书确认异步发送，不阻塞
         threading.Thread(
             target=self.feishu.send_text_message,
-            args=(f"✅ 已发送到终端 #{window_id}",),
+            args=(f"✅ 已发送到终端 #{display_id}",),
             daemon=True,
         ).start()
 
@@ -1270,7 +1291,7 @@ def cmd_status():
                     p = json.load(f)
                 age = time.time() - p.get("timestamp", 0)
                 notified = "已通知" if p.get("notified") else "等待中"
-                print(f"  - window={p.get('window_id')} age={int(age)}s {notified}")
+                print(f"  - terminal={p.get('terminal_id') or p.get('window_id')} age={int(age)}s {notified}")
             except Exception:
                 print(f"  - {fp} (读取失败)")
     else:

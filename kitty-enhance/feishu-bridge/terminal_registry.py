@@ -10,12 +10,65 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 
 logger = logging.getLogger("feishu-bridge")
 
 REGISTRY_FILE = "/tmp/feishu-bridge/registry.json"
+_SOCKET_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def socket_to_label(socket: str) -> str:
+    """Return a short, file-safe label for a kitty socket."""
+    value = (socket or "").strip()
+    if value.startswith("unix:"):
+        value = value[5:]
+    if value.startswith("@"):
+        value = value[1:]
+    value = _SOCKET_LABEL_RE.sub("_", value).strip("_")
+    return value or "kitty"
+
+
+def build_terminal_id(window_id: str, socket: str) -> str:
+    """Build a stable terminal id from kitty socket + window id."""
+    wid = str(window_id or "").strip()
+    if not wid:
+        return ""
+    label = socket_to_label(socket)
+    return f"{wid}@{label}" if label else wid
+
+
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_terminal_entry(entry_key: str, entry: dict) -> tuple[str, dict] | None:
+    if not isinstance(entry, dict):
+        return None
+
+    window_id = str(entry.get("window_id") or entry_key or "").strip()
+    socket = str(entry.get("kitty_socket") or "").strip()
+    if not window_id or not socket:
+        return None
+
+    terminal_id = str(entry.get("terminal_id") or "").strip() or build_terminal_id(window_id, socket)
+    normalized = dict(entry)
+    normalized["window_id"] = window_id
+    normalized["kitty_socket"] = socket
+    normalized["terminal_id"] = terminal_id
+    normalized["socket_label"] = socket_to_label(socket)
+    return terminal_id, normalized
+
+
+def _pick_newer_entry(existing: dict, candidate: dict) -> dict:
+    existing_score = (_safe_float(existing.get("last_activity")), _safe_float(existing.get("registered_at")))
+    candidate_score = (_safe_float(candidate.get("last_activity")), _safe_float(candidate.get("registered_at")))
+    return candidate if candidate_score >= existing_score else existing
 
 
 def discover_kitty_sockets() -> list[str]:
@@ -42,12 +95,26 @@ def discover_kitty_sockets() -> list[str]:
 
 
 def load_registry() -> dict:
-    """读取注册表，返回 {window_id: info_dict}"""
+    """读取注册表，返回 {terminal_id: info_dict}"""
     try:
         with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    normalized: dict[str, dict] = {}
+    for entry_key, entry in raw.items():
+        converted = _normalize_terminal_entry(str(entry_key), entry)
+        if not converted:
+            continue
+        terminal_id, normalized_entry = converted
+        if terminal_id in normalized:
+            normalized[terminal_id] = _pick_newer_entry(normalized[terminal_id], normalized_entry)
+        else:
+            normalized[terminal_id] = normalized_entry
+    return normalized
 
 
 def save_registry(registry: dict):
@@ -100,23 +167,23 @@ def cleanup_registry(socket: str) -> int:
     if not registry:
         return 0
 
-    active_windows = _get_supported_window_ids(socket)
-    if active_windows is None:
+    active_terminals = _get_supported_terminal_ids(socket)
+    if active_terminals is None:
         # kitty 命令失败时不清理，避免误删
         return 0
 
-    to_remove = [wid for wid in registry if wid not in active_windows]
-    for wid in to_remove:
-        del registry[wid]
-        logger.info("清理终端: window=%s", wid)
+    to_remove = [terminal_id for terminal_id in registry if terminal_id not in active_terminals]
+    for terminal_id in to_remove:
+        del registry[terminal_id]
+        logger.info("清理终端: terminal=%s", terminal_id)
 
     if to_remove:
         save_registry(registry)
     return len(to_remove)
 
 
-def _get_supported_window_ids(socket: str) -> set[str] | None:
-    """获取所有运行受支持 AI 终端的窗口 ID，失败返回 None"""
+def _get_supported_terminal_ids(socket: str) -> set[str] | None:
+    """获取所有运行受支持 AI 终端的 terminal_id，失败返回 None"""
     cmd = ["kitty", "@", "--to", socket, "ls"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -127,8 +194,12 @@ def _get_supported_window_ids(socket: str) -> set[str] | None:
         for os_win in data:
             for tab in os_win.get("tabs", []):
                 for win in tab.get("windows", []):
-                    if _detect_agent_kind(win):
-                        ids.add(str(win.get("id", "")))
+                    agent_kind = _detect_agent_kind(win)
+                    if not agent_kind:
+                        continue
+                    wid = str(win.get("id", ""))
+                    if wid:
+                        ids.add(build_terminal_id(wid, socket))
         return ids
     except Exception:
         return None
@@ -151,7 +222,7 @@ def scan_and_register(socket: str) -> int:
     new_count = 0
     now = time.time()
 
-    supported_wids = []
+    supported_ids = []
     all_wids = []
     for os_win in data:
         for tab in os_win.get("tabs", []):
@@ -164,22 +235,26 @@ def scan_and_register(socket: str) -> int:
                 agent_kind = _detect_agent_kind(win)
                 if not agent_kind:
                     continue
-                supported_wids.append(f"{wid}:{agent_kind}")
-                if wid in registry:
+                terminal_id = build_terminal_id(wid, socket)
+                supported_ids.append(f"{terminal_id}:{agent_kind}")
+                if terminal_id in registry:
                     # 已注册的更新 tab_title 和 socket（可能变化）
-                    if tab_title and registry[wid].get("tab_title") != tab_title:
-                        registry[wid]["tab_title"] = tab_title
-                    registry[wid]["kitty_socket"] = socket
-                    registry[wid]["agent_kind"] = agent_kind
-                    registry[wid]["agent_name"] = _agent_name(agent_kind)
+                    if tab_title and registry[terminal_id].get("tab_title") != tab_title:
+                        registry[terminal_id]["tab_title"] = tab_title
+                    registry[terminal_id]["kitty_socket"] = socket
+                    registry[terminal_id]["socket_label"] = socket_to_label(socket)
+                    registry[terminal_id]["agent_kind"] = agent_kind
+                    registry[terminal_id]["agent_name"] = _agent_name(agent_kind)
                     continue
                 cwd = ""
                 foreground = win.get("foreground_processes", [])
                 if foreground:
                     cwd = foreground[0].get("cwd", "")
-                registry[wid] = {
+                registry[terminal_id] = {
+                    "terminal_id": terminal_id,
                     "window_id": wid,
                     "kitty_socket": socket,
+                    "socket_label": socket_to_label(socket),
                     "tab_title": tab_title,
                     "cwd": cwd,
                     "registered_at": now,
@@ -195,7 +270,7 @@ def scan_and_register(socket: str) -> int:
     if new_count:
         logger.info("扫描注册: socket=%s, 新增 %d 个终端", socket, new_count)
     logger.debug("扫描结果: socket=%s, 总窗口=%d, 受支持终端=%s",
-                 socket, len(all_wids), supported_wids)
+                 socket, len(all_wids), supported_ids)
     return new_count
 
 
@@ -239,31 +314,53 @@ def cleanup_all_kitty() -> int:
     if not sockets:
         return 0
 
-    all_supported_windows: set[str] = set()
+    all_supported_terminals: set[str] = set()
     any_success = False
     for sock in sockets:
-        wids = _get_supported_window_ids(sock)
-        if wids is not None:
-            all_supported_windows.update(wids)
+        terminal_ids = _get_supported_terminal_ids(sock)
+        if terminal_ids is not None:
+            all_supported_terminals.update(terminal_ids)
             any_success = True
 
     if not any_success:
         return 0
 
-    to_remove = [wid for wid in registry if wid not in all_supported_windows]
-    for wid in to_remove:
-        del registry[wid]
-        logger.info("清理终端: window=%s", wid)
+    to_remove = [terminal_id for terminal_id in registry if terminal_id not in all_supported_terminals]
+    for terminal_id in to_remove:
+        del registry[terminal_id]
+        logger.info("清理终端: terminal=%s", terminal_id)
 
     if to_remove:
         save_registry(registry)
     return len(to_remove)
 
 
-def get_terminal_info(window_id: str) -> dict | None:
-    """获取单个终端信息"""
-    registry = load_registry()
-    return registry.get(window_id)
+def resolve_terminal_selector(selector: str, registry: dict | None = None) -> tuple[dict | None, list[dict]]:
+    """Resolve terminal_id or legacy window_id to a registry entry.
+
+    Returns `(entry, ambiguous_matches)`.
+    """
+    selector = (selector or "").strip()
+    if not selector:
+        return None, []
+
+    registry = registry or load_registry()
+    if selector in registry:
+        return registry[selector], []
+
+    matches = [entry for entry in registry.values() if entry.get("window_id") == selector]
+    if len(matches) == 1:
+        return matches[0], []
+    if len(matches) > 1:
+        matches.sort(key=lambda item: item.get("terminal_id") or "")
+        return None, matches
+    return None, []
+
+
+def get_terminal_info(selector: str) -> dict | None:
+    """获取单个终端信息，支持 terminal_id 或唯一的 window_id。"""
+    terminal, _ = resolve_terminal_selector(selector)
+    return terminal
 
 
 def format_time_ago(ts: float) -> str:

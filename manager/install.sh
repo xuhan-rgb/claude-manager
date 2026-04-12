@@ -72,6 +72,8 @@ create_symlink() {
 
     local src="$VENV_DIR/bin/claude-manager"
     local dst="$BIN_DIR/claude-manager"
+    local agent_src="$VENV_DIR/bin/agent-terminals"
+    local agent_dst="$BIN_DIR/agent-terminals"
 
     if [ ! -f "$src" ]; then
         error "入口脚本不存在: $src"
@@ -83,6 +85,16 @@ create_symlink() {
     fi
     ln -sf "$src" "$dst"
     success "已链接 claude-manager → $dst"
+
+    if [ -f "$agent_src" ]; then
+        if [ -L "$agent_dst" ] || [ -f "$agent_dst" ]; then
+            rm -f "$agent_dst"
+        fi
+        ln -sf "$agent_src" "$agent_dst"
+        success "已链接 agent-terminals → $agent_dst"
+    else
+        warning "未找到独立终端管理入口: $agent_src"
+    fi
 
     # 检查 PATH
     if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
@@ -120,6 +132,13 @@ verify_installation() {
         ((errors++))
     fi
 
+    if "$VENV_DIR/bin/agent-terminals" list --help &>/dev/null; then
+        success "agent-terminals 独立入口正常"
+    else
+        error "agent-terminals 独立入口失败"
+        ((errors++))
+    fi
+
     if [ $errors -gt 0 ]; then
         error "验证失败 ($errors 个错误)"
         return 1
@@ -142,6 +161,13 @@ do_uninstall() {
         info "未找到 $BIN_DIR/claude-manager"
     fi
 
+    if [ -L "$BIN_DIR/agent-terminals" ]; then
+        rm "$BIN_DIR/agent-terminals"
+        success "已删除 $BIN_DIR/agent-terminals"
+    else
+        info "未找到 $BIN_DIR/agent-terminals"
+    fi
+
     if [ -d "$VENV_DIR" ]; then
         rm -rf "$VENV_DIR"
         success "已删除虚拟环境: $VENV_DIR"
@@ -160,10 +186,14 @@ print_usage() {
     echo ""
     echo "可用命令："
     echo ""
-    echo "  claude-manager tabs list            列出所有 Claude/Codex 终端"
+    echo "  agent-terminals                     独立的 agent 终端管理器（默认交互选择）"
+    echo "  agent-terminals list                列出所有 Claude/Codex 终端"
+    echo "  agent-terminals focus <terminal_id> 跳转到指定终端"
+    echo ""
+    echo "  claude-manager tabs list            兼容旧入口（等价于 agent-terminals list）"
     echo "  claude-manager tabs list --active   只看 working/waiting"
     echo "  claude-manager tabs list --json     JSON 格式输出"
-    echo "  claude-manager tabs focus <id>      跳转到指定终端"
+    echo "  claude-manager tabs focus <terminal_id>  跳转到指定终端"
     echo ""
     echo "  claude-manager                      启动 TUI 面板（需 kitty）"
     echo "  claude-manager --check              检查环境"
@@ -171,6 +201,7 @@ print_usage() {
     echo "安装信息："
     echo "  虚拟环境: $VENV_DIR"
     echo "  命令路径: $BIN_DIR/claude-manager"
+    echo "  独立终端管理命令: $BIN_DIR/agent-terminals"
     echo "  代码路径: $SCRIPT_DIR (editable，修改即生效)"
     echo ""
     echo "卸载: ./install.sh --uninstall"

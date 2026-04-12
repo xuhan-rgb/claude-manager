@@ -37,6 +37,7 @@ dev = [
 
 [project.scripts]
 claude-manager = "claude_manager.cli:main"
+agent-terminals = "claude_manager.tabs.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/user/claude-manager"

@@ -67,7 +67,7 @@ class FeishuClient:
             detail_lines.append(f"**类型**: {message}")
         detail_lines.append(f"**等待**: {wait_str}")
 
-        wid = pending.get("window_id", "?")
+        wid = pending.get("terminal_id") or pending.get("window_id", "?")
 
         if reply_mode == "selection":
             header_text = f"🔵 Claude Code 等待选择 [窗口 {wid}]"
@@ -204,7 +204,8 @@ class FeishuClient:
             ago = format_time_ago(t.get("last_activity", 0))
             agent_name = t.get("agent_name") or "Claude"
             agent_prefix = "" if agent_name == "Claude" else f"[{agent_name}] "
-            lines.append(f"{icon} **#{t['window_id']}**  {agent_prefix}{title}　　{status}　{ago}")
+            terminal_id = t.get("terminal_id") or t.get("window_id", "?")
+            lines.append(f"{icon} **#{terminal_id}**  {agent_prefix}{title}　　{status}　{ago}")
 
         body = "\n".join(lines)
         card = json.dumps({
@@ -219,7 +220,7 @@ class FeishuClient:
             "elements": [
                 {"tag": "markdown", "content": body},
                 {"tag": "hr"},
-                {"tag": "markdown", "content": "**#N** 详情　|　**#N 进度** 屏幕　|　**#N y/n** 权限　|　**ls -l** 预览"},
+                {"tag": "markdown", "content": "**#terminal_id** 详情　|　**#terminal_id 进度** 屏幕　|　**#terminal_id y/n** 权限　|　**ls -l** 预览"},
             ],
         }, ensure_ascii=False)
 
@@ -229,7 +230,7 @@ class FeishuClient:
         """发送终端详情卡片"""
         from terminal_registry import STATUS_ICON, STATUS_TEXT, format_time_ago
 
-        wid = terminal.get("window_id", "?")
+        wid = terminal.get("terminal_id") or terminal.get("window_id", "?")
         icon = STATUS_ICON.get(terminal.get("status", "idle"), "⚪")
         status = STATUS_TEXT.get(terminal.get("status", "idle"), "未知")
         title = terminal.get("tab_title") or "未知"

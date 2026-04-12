@@ -17,6 +17,7 @@ debug "=== on-stop.sh triggered ==="
 
 KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 WINDOW_ID="${KITTY_WINDOW_ID:-}"
+BRIDGE_DIR="$(dirname "$(readlink -f "$0")")/../feishu-bridge"
 [ -z "$WINDOW_ID" ] && { debug "no WINDOW_ID, exit"; exit 0; }
 
 # Tab 颜色逻辑（仅在 tab-color 可用时执行）
@@ -54,7 +55,17 @@ fi
 # === 飞书桥接逻辑（始终执行） ===
 
 # 清理 feishu-bridge pending 文件（任务已停止，权限弹窗不再需要）
+TERMINAL_ID=$(CM_BRIDGE_DIR="$BRIDGE_DIR" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["CM_BRIDGE_DIR"])
+from terminal_registry import build_terminal_id
+wid = os.environ.get("KITTY_WINDOW_ID", "")
+sock = os.environ.get("KITTY_LISTEN_ON", "")
+print(build_terminal_id(wid, sock))
+PY
+)
 rm -f "/tmp/feishu-bridge/${WINDOW_ID}.json" 2>/dev/null
+[ -n "$TERMINAL_ID" ] && rm -f "/tmp/feishu-bridge/${TERMINAL_ID}.json" 2>/dev/null
 
 # 终端注册：状态更新为 completed
 source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"
@@ -64,12 +75,15 @@ _feishu_register "completed"
 export _STOP_SCREEN_TAIL
 _STOP_SCREEN_TAIL=$(kitty @ --to "$KITTY_SOCKET" get-text --match "id:$WINDOW_ID" --extent=screen 2>/dev/null | tail -20 || true)
 
-python3 -c '
+CM_BRIDGE_DIR="$BRIDGE_DIR" python3 -c '
 import json, time, sys, os
+sys.path.insert(0, os.environ["CM_BRIDGE_DIR"])
+from terminal_registry import build_terminal_id
 
 window_id = os.environ.get("KITTY_WINDOW_ID", "")
 kitty_socket = os.environ.get("KITTY_LISTEN_ON", "")
 screen_tail = os.environ.get("_STOP_SCREEN_TAIL", "")
+terminal_id = build_terminal_id(window_id, kitty_socket)
 
 # 获取 Tab 标题
 tab_title = ""
@@ -89,16 +103,23 @@ except Exception:
 
 info = {
     "type": "completed",
+    "terminal_id": terminal_id,
     "window_id": window_id,
     "kitty_socket": kitty_socket,
     "tab_title": tab_title,
     "screen_tail": screen_tail,
     "timestamp": time.time(),
 }
-path = f"/tmp/feishu-bridge/{window_id}_completed.json"
+path = f"/tmp/feishu-bridge/{terminal_id}_completed.json"
+legacy_path = f"/tmp/feishu-bridge/{window_id}_completed.json"
 os.makedirs("/tmp/feishu-bridge", exist_ok=True)
-with open(path, "w") as f:
+with open(path, "w", encoding="utf-8") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)
+if legacy_path != path:
+    try:
+        os.remove(legacy_path)
+    except FileNotFoundError:
+        pass
 '
 
 exit 0

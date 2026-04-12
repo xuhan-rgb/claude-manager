@@ -9,10 +9,10 @@ from .tmux_control import check_tmux
 
 def main():
     """主入口"""
-    # Early dispatch: 'tabs' subcommand bypasses TUI/tmux checks entirely.
-    if len(sys.argv) > 1 and sys.argv[1] == "tabs":
+    # Early dispatch: standalone terminal-manager commands bypass TUI/tmux checks entirely.
+    if len(sys.argv) > 1 and sys.argv[1] in {"tabs", "terminals"}:
         from .tabs.cli import run
-        return run(sys.argv[2:])
+        return run(sys.argv[2:], prog=f"claude-manager {sys.argv[1]}")
 
     parser = argparse.ArgumentParser(
         description='Claude Manager - 终端分屏 + tmux session 管理',

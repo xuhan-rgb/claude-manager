@@ -1,10 +1,11 @@
-"""CLI for claude-manager tabs subcommand."""
+"""CLI for standalone Claude/Codex terminal management."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from typing import Iterable
 
 from .kitty import focus_window
 from .registry import TerminalInfo, list_alive_terminals, load_registry
@@ -28,9 +29,6 @@ _STATUS_COLOR = {
     "completed": "\033[31m",  # red
     "idle": "\033[90m",       # gray
 }
-_RESET = "\033[0m"
-
-
 _FG_RESET = "\033[39m"  # reset foreground only, preserve background
 
 
@@ -68,14 +66,14 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
         print("没有活跃的终端。")
         print()
         print("提示:")
-        print("  - 确认 kitty hook 已经安装（在 kitty tab 里运行 claude 后会自动注册）")
+        print("  - 确认 kitty hook 已经安装（在 kitty tab 里运行 claude/codex 后会自动注册）")
         print("  - 注册数据位于 /tmp/feishu-bridge/registry.json")
         return
 
     headers = ["ID", "TAB", "PROJECT", "AGENT", "STATUS", "IDLE"]
     rows = [
         [
-            t.window_id,
+            t.terminal_id,
             t.tab_title,
             t.project_name,
             t.agent_kind,
@@ -96,7 +94,6 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
 
     # Zebra stripe: alternating row background for readability.
     _BG_EVEN = "\033[48;5;236m"  # dark gray background
-    _BG_ODD = ""                 # terminal default
     _BG_RESET = "\033[49m"       # reset background only
 
     print(format_row(headers))
@@ -122,11 +119,14 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
     print(f"共 {len(terminals)} 个活跃终端")
 
 
+
 def _print_json(terminals: list[TerminalInfo]) -> None:
     payload = [
         {
+            "terminal_id": t.terminal_id,
             "window_id": t.window_id,
             "socket": t.socket,
+            "socket_label": t.socket_label,
             "tab_title": t.tab_title,
             "cwd": t.cwd,
             "project_name": t.project_name,
@@ -138,6 +138,25 @@ def _print_json(terminals: list[TerminalInfo]) -> None:
         for t in terminals
     ]
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _format_terminal_line(terminals: Iterable[TerminalInfo]) -> list[str]:
+    return [f"  {t.terminal_id}  {t.tab_title}" for t in terminals]
+
+
+def _resolve_focus_target(selector: str) -> tuple[TerminalInfo | None, list[TerminalInfo]]:
+    terminals = list_alive_terminals()
+    exact = [t for t in terminals if t.terminal_id == selector]
+    if exact:
+        return exact[0], []
+
+    matches = [t for t in terminals if t.window_id == selector]
+    if len(matches) == 1:
+        return matches[0], []
+    if len(matches) > 1:
+        return None, matches
+
+    return None, []
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -152,35 +171,53 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_focus(args: argparse.Namespace) -> int:
-    raw = load_registry()
-    entry = raw.get(args.window_id)
-    if not entry:
+    target, ambiguous = _resolve_focus_target(args.terminal_id)
+    if ambiguous:
         print(
-            f"错误: 未找到 window_id={args.window_id} 的终端。",
+            f"错误: 终端 ID {args.terminal_id} 不唯一，请使用完整 terminal_id。",
             file=sys.stderr,
         )
+        print("", file=sys.stderr)
+        print("可选目标:", file=sys.stderr)
+        for line in _format_terminal_line(ambiguous):
+            print(line, file=sys.stderr)
+        return 1
+
+    if not target:
+        raw = load_registry()
+        if args.terminal_id in raw:
+            print(
+                f"错误: 终端 {args.terminal_id} 已存在于注册表，但当前不在线。",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"错误: 未找到 terminal_id={args.terminal_id} 的终端。",
+                file=sys.stderr,
+            )
         alive = list_alive_terminals()
         if alive:
             print("", file=sys.stderr)
             print("当前活跃的终端:", file=sys.stderr)
-            for t in alive:
-                print(f"  {t.window_id}  {t.tab_title}", file=sys.stderr)
+            for line in _format_terminal_line(alive):
+                print(line, file=sys.stderr)
         return 1
 
-    socket = entry.get("kitty_socket", "")
-    ok, err = focus_window(socket, args.window_id)
+    ok, err = focus_window(target.socket, target.window_id)
     if not ok:
         print(f"错误: {err}", file=sys.stderr)
         return 1
 
-    tab_title = entry.get("tab_title", "")
-    print(f'切换到 "{tab_title}"（window_id={args.window_id}, socket={socket}）')
+    print(
+        f'切换到 "{target.tab_title}"'
+        f"（terminal_id={target.terminal_id}, socket={target.socket}）"
+    )
     return 0
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="claude-manager tabs",
+        prog=prog,
         description="管理正在运行 Claude/Codex 的 kitty 终端",
     )
     sub = parser.add_subparsers(dest="command")
@@ -196,8 +233,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_list.set_defaults(func=cmd_list)
 
-    p_focus = sub.add_parser("focus", help="切换到指定 window_id 对应的 kitty 窗口")
-    p_focus.add_argument("window_id", help="kitty window_id")
+    p_focus = sub.add_parser("focus", help="切换到指定 terminal_id 对应的 kitty 窗口")
+    p_focus.add_argument("terminal_id", help="terminal_id，或在唯一时使用裸 window_id")
     p_focus.set_defaults(func=cmd_focus)
 
     p_select = sub.add_parser("select", help="交互式选择并跳转终端 (↑↓/jk 选择, Enter 跳转)")
@@ -211,8 +248,8 @@ def _cmd_select() -> int:
     return run_interactive()
 
 
-def run(argv: list[str]) -> int:
-    parser = _build_parser()
+def run(argv: list[str], prog: str = "agent-terminals") -> int:
+    parser = _build_parser(prog=prog)
     args = parser.parse_args(argv)
     # No subcommand → default to interactive select (if tty) or list
     if args.command is None:
@@ -220,3 +257,7 @@ def run(argv: list[str]) -> int:
             return _cmd_select()
         return cmd_list(argparse.Namespace(active=False, json=False))
     return args.func(args)
+
+
+def main() -> int:
+    return run(sys.argv[1:], prog="agent-terminals")

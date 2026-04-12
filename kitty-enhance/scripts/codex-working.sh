@@ -13,6 +13,7 @@ fi
 
 KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
 WINDOW_ID="${KITTY_WINDOW_ID:-}"
+BRIDGE_DIR="$(dirname "$(readlink -f "$0")")/../feishu-bridge"
 [ -z "$WINDOW_ID" ] && exit 0
 
 if [ "$_TAB_COLOR" = true ]; then
@@ -36,31 +37,30 @@ fi
 
 (
 flock -w 1 200 || exit 0
-python3 <<'PYEOF'
-import json
+CM_BRIDGE_DIR="$BRIDGE_DIR" python3 <<'PYEOF'
 import os
+import sys
 import time
-from pathlib import Path
 
-registry_path = Path("/tmp/feishu-bridge/registry.json")
-registry_path.parent.mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, os.environ["CM_BRIDGE_DIR"])
+from terminal_registry import build_terminal_id, load_registry, save_registry, socket_to_label
 
 window_id = os.environ.get("KITTY_WINDOW_ID", "")
-if not window_id:
+kitty_socket = os.environ.get("KITTY_LISTEN_ON", "")
+if not window_id or not kitty_socket:
     raise SystemExit(0)
 
-try:
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-except Exception:
-    registry = {}
-
-old = registry.get(window_id, {})
+registry = load_registry()
+terminal_id = build_terminal_id(window_id, kitty_socket)
+old = registry.get(terminal_id, {})
 cwd = os.environ.get("PWD", "")
 tab_title = old.get("tab_title") or (cwd.rsplit("/", 1)[-1] if cwd else "")
 
-registry[window_id] = {
+registry[terminal_id] = {
+    "terminal_id": terminal_id,
     "window_id": window_id,
-    "kitty_socket": os.environ.get("KITTY_LISTEN_ON", "") or old.get("kitty_socket", ""),
+    "kitty_socket": kitty_socket or old.get("kitty_socket", ""),
+    "socket_label": socket_to_label(kitty_socket or old.get("kitty_socket", "")),
     "tab_title": tab_title,
     "cwd": cwd or old.get("cwd", ""),
     "registered_at": old.get("registered_at", time.time()),
@@ -70,6 +70,6 @@ registry[window_id] = {
     "agent_name": "Codex",
 }
 
-registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+save_registry(registry)
 PYEOF
 ) 200>/tmp/feishu-bridge/.registry.lock

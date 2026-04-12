@@ -7,7 +7,7 @@ import sys
 import termios
 import tty
 
-from .cli import format_time_ago, _display_width, _pad_right, _STATUS_COLOR, _RESET
+from .cli import format_time_ago, _display_width, _pad_right, _STATUS_COLOR
 from .kitty import focus_window
 from .registry import TerminalInfo, list_alive_terminals
 
@@ -59,7 +59,7 @@ def _render_line(
     )
 
     cells = [
-        _pad_right(t.window_id, widths[0]),
+        _pad_right(t.terminal_id, widths[0]),
         _pad_right(t.tab_title, widths[1]),
         _pad_right(t.project_name, widths[2]),
         _pad_right(t.agent_kind, widths[3]),
@@ -82,7 +82,7 @@ def _compute_widths(
     widths = [_display_width(h) for h in headers]
     for t in terminals:
         cells = [
-            t.window_id,
+            t.terminal_id,
             t.tab_title,
             t.project_name,
             t.agent_kind,
@@ -168,7 +168,7 @@ def run_interactive() -> int:
                 if ok:
                     print(
                         f'切换到 "{t.tab_title}"'
-                        f"（window_id={t.window_id}）"
+                        f"（terminal_id={t.terminal_id}）"
                     )
                 else:
                     print(f"错误: {err}", file=sys.stderr)

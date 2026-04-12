@@ -8,12 +8,36 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+_SOCKET_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def socket_to_label(socket: str) -> str:
+    """Return a short, file-safe label for a kitty socket."""
+    value = (socket or "").strip()
+    if value.startswith("unix:"):
+        value = value[5:]
+    if value.startswith("@"):
+        value = value[1:]
+    value = _SOCKET_LABEL_RE.sub("_", value).strip("_")
+    return value or "kitty"
+
+
+def build_terminal_id(window_id: str, socket: str) -> str:
+    """Build a stable terminal id from kitty socket + window id."""
+    wid = str(window_id or "").strip()
+    if not wid:
+        return ""
+    label = socket_to_label(socket)
+    return f"{wid}@{label}" if label else wid
 
 
 @dataclass(frozen=True)
@@ -28,6 +52,15 @@ class TerminalInfo:
     agent_kind: str      # "claude" / "codex"
     last_activity: float
     registered_at: float
+    terminal_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.terminal_id:
+            object.__setattr__(
+                self,
+                "terminal_id",
+                build_terminal_id(self.window_id, self.socket),
+            )
 
     @property
     def idle_seconds(self) -> float:
@@ -37,12 +70,50 @@ class TerminalInfo:
     def project_name(self) -> str:
         return Path(self.cwd).name or self.cwd
 
+    @property
+    def socket_label(self) -> str:
+        return socket_to_label(self.socket)
+
 
 REGISTRY_PATH = Path("/tmp/feishu-bridge/registry.json")
 
 
+def _safe_float(value) -> float:
+    """Best-effort float conversion; returns 0.0 for any unparseable value."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_registry_entry(entry_key: str, entry: dict) -> tuple[str, dict] | None:
+    """Convert a registry entry to the canonical terminal-id keyed form."""
+    if not isinstance(entry, dict):
+        return None
+
+    window_id = str(entry.get("window_id") or entry_key or "").strip()
+    socket = str(entry.get("kitty_socket") or "").strip()
+    if not window_id or not socket:
+        return None
+
+    terminal_id = str(entry.get("terminal_id") or "").strip() or build_terminal_id(window_id, socket)
+    normalized = dict(entry)
+    normalized["window_id"] = window_id
+    normalized["kitty_socket"] = socket
+    normalized["terminal_id"] = terminal_id
+    normalized["socket_label"] = socket_to_label(socket)
+    return terminal_id, normalized
+
+
+def _pick_newer_entry(existing: dict, candidate: dict) -> dict:
+    """Resolve collisions while migrating legacy registry keys."""
+    existing_score = (_safe_float(existing.get("last_activity")), _safe_float(existing.get("registered_at")))
+    candidate_score = (_safe_float(candidate.get("last_activity")), _safe_float(candidate.get("registered_at")))
+    return candidate if candidate_score >= existing_score else existing
+
+
 def load_registry() -> dict[str, dict]:
-    """Read raw registry dict from disk.
+    """Read normalized registry dict keyed by terminal_id.
 
     Returns empty dict if the file is missing, corrupt, or not a JSON object.
     Never raises.
@@ -58,11 +129,25 @@ def load_registry() -> dict[str, dict]:
     if not isinstance(data, dict):
         logger.warning("%s is not a JSON object, ignoring", REGISTRY_PATH)
         return {}
-    cleaned = {k: v for k, v in data.items() if isinstance(v, dict)}
-    if len(cleaned) != len(data):
+
+    cleaned: dict[str, dict] = {}
+    filtered_out = 0
+    for entry_key, entry in data.items():
+        normalized = _normalize_registry_entry(str(entry_key), entry)
+        if not normalized:
+            filtered_out += 1
+            continue
+        terminal_id, normalized_entry = normalized
+        if terminal_id in cleaned:
+            cleaned[terminal_id] = _pick_newer_entry(cleaned[terminal_id], normalized_entry)
+        else:
+            cleaned[terminal_id] = normalized_entry
+
+    if filtered_out:
         logger.warning(
-            "%s contained %d non-dict entries, filtered out",
-            REGISTRY_PATH, len(data) - len(cleaned),
+            "%s contained %d invalid entries, filtered out",
+            REGISTRY_PATH,
+            filtered_out,
         )
     return cleaned
 
@@ -116,14 +201,6 @@ def _get_alive_windows(socket: str) -> dict[str, dict]:
     return alive
 
 
-def _safe_float(value) -> float:
-    """Best-effort float conversion; returns 0.0 for any unparseable value."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def list_alive_terminals() -> list[TerminalInfo]:
     """Read registry and return currently alive TerminalInfo, sorted by recency.
 
@@ -164,6 +241,7 @@ def list_alive_terminals() -> list[TerminalInfo]:
                     agent_kind=entry.get("agent_kind", "claude"),
                     last_activity=_safe_float(entry.get("last_activity", 0)),
                     registered_at=_safe_float(entry.get("registered_at", 0)),
+                    terminal_id=str(entry.get("terminal_id") or build_terminal_id(wid, socket)),
                 )
             )
 

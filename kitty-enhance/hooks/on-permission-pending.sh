@@ -10,6 +10,7 @@ STATE_DIR="/tmp/feishu-bridge"
 mkdir -p "$STATE_DIR"
 
 KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
+BRIDGE_DIR="$(dirname "$(readlink -f "$0")")/../feishu-bridge"
 
 # 读取 stdin JSON（Notification Hook 提供的上下文信息）
 INPUT=$(cat)
@@ -39,27 +40,35 @@ except: pass
 # 通过环境变量传递给 Python
 export SCREEN_TEXT TAB_TITLE
 export HOOK_INPUT="$INPUT"
+export CM_BRIDGE_DIR="$BRIDGE_DIR"
 
 # 写入 pending 文件
 python3 << 'PYEOF'
-import json, time, sys, os
+import json
+import os
+import sys
+import time
 
-# 读取环境变量和外部数据
+sys.path.insert(0, os.environ['CM_BRIDGE_DIR'])
+from terminal_registry import build_terminal_id
+
 window_id = os.environ.get('KITTY_WINDOW_ID', '')
 kitty_socket = os.environ.get('KITTY_LISTEN_ON', '')
+if not window_id or not kitty_socket:
+    raise SystemExit(0)
+terminal_id = build_terminal_id(window_id, kitty_socket)
 
-# 读取 hook stdin JSON
 try:
     hook_data = json.loads(os.environ.get('HOOK_INPUT', '{}'))
 except Exception:
     hook_data = {}
 
-# 获取屏幕内容，取最后 50 行（包含问题上下文 + 选项）
 screen = os.environ.get('SCREEN_TEXT', '')
 lines = [l for l in screen.strip().split('\n') if l.strip()] if screen else []
 screen_tail = '\n'.join(lines[-50:]) if lines else ''
 
 pending = {
+    'terminal_id': terminal_id,
     'window_id': window_id,
     'kitty_socket': kitty_socket,
     'tab_title': os.environ.get('TAB_TITLE', ''),
@@ -71,9 +80,15 @@ pending = {
 }
 
 state_dir = '/tmp/feishu-bridge'
-path = os.path.join(state_dir, f'{window_id}.json')
-with open(path, 'w') as f:
+path = os.path.join(state_dir, f'{terminal_id}.json')
+legacy_path = os.path.join(state_dir, f'{window_id}.json')
+with open(path, 'w', encoding='utf-8') as f:
     json.dump(pending, f, ensure_ascii=False, indent=2)
+if legacy_path != path:
+    try:
+        os.remove(legacy_path)
+    except FileNotFoundError:
+        pass
 PYEOF
 
 # 终端注册：状态更新为 waiting
