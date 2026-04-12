@@ -1,0 +1,12 @@
+#!/bin/bash
+# Wrapper for 'claude-manager tabs' using Python 3.10
+# Usage: claude-manager-tabs list / claude-manager-tabs focus <id>
+PYTHONPATH="/mnt/data/claude-manager/manager/src" \
+  /home/qwer/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/bin/python3.10 \
+  -c "
+import sys
+sys.modules['claude_manager'] = type(sys)('claude_manager')
+sys.modules['claude_manager'].__path__ = ['/mnt/data/claude-manager/manager/src/claude_manager']
+from claude_manager.tabs.cli import run
+sys.exit(run(sys.argv[1:]))
+" "$@"
