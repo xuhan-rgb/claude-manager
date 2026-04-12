@@ -7,8 +7,10 @@ import time
 
 import pytest
 
+from claude_manager.tabs import cli as cli_module
 from claude_manager.tabs import kitty as kitty_module
 from claude_manager.tabs import registry as registry_module
+from claude_manager.tabs.cli import format_time_ago, run
 from claude_manager.tabs.kitty import focus_window
 from claude_manager.tabs.registry import (
     TerminalInfo,
@@ -433,3 +435,177 @@ class TestFocusWindow:
         ok, err = focus_window("unix:@mykitty-1", "42")
         assert ok is False
         assert "not found" in err
+
+
+# --- CLI Tests (Tasks 6-8) ---
+
+
+def _make_terminal(**overrides) -> TerminalInfo:
+    defaults = dict(
+        window_id="42",
+        socket="unix:@mykitty-1",
+        tab_title="my-tab",
+        cwd="/home/user/my-project",
+        status="working",
+        agent_kind="claude",
+        last_activity=time.time() - 30,
+        registered_at=time.time() - 300,
+    )
+    defaults.update(overrides)
+    return TerminalInfo(**defaults)
+
+
+class TestFormatTimeAgo:
+    def test_recent(self):
+        assert format_time_ago(0) == "刚刚"
+        assert format_time_ago(59) == "刚刚"
+
+    def test_minutes(self):
+        assert format_time_ago(60) == "1分钟前"
+        assert format_time_ago(180) == "3分钟前"
+        assert format_time_ago(3599) == "59分钟前"
+
+    def test_hours(self):
+        assert format_time_ago(3600) == "1小时前"
+        assert format_time_ago(7200) == "2小时前"
+
+    def test_days(self):
+        assert format_time_ago(86400) == "1天前"
+        assert format_time_ago(172800) == "2天前"
+
+
+class TestListCommand:
+    def test_empty_list_shows_hint(self, capsys, monkeypatch):
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [])
+        rc = run(["list"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "没有活跃的终端" in out
+        assert "/tmp/feishu-bridge/registry.json" in out
+
+    def test_list_shows_columns(self, capsys, monkeypatch):
+        t1 = _make_terminal(window_id="42", tab_title="first-tab")
+        t2 = _make_terminal(
+            window_id="18",
+            tab_title="second-tab",
+            status="waiting",
+            cwd="/home/user/other-proj",
+            last_activity=time.time() - 250,
+        )
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [t1, t2])
+        rc = run(["list"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "42" in out
+        assert "18" in out
+        assert "first-tab" in out
+        assert "second-tab" in out
+        assert "my-project" in out
+        assert "other-proj" in out
+        assert "共 2 个活跃终端" in out
+
+    def test_list_includes_header_row(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli_module, "list_alive_terminals", lambda: [_make_terminal()]
+        )
+        rc = run(["list"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        for col in ("ID", "TAB", "PROJECT", "AGENT", "STATUS", "IDLE"):
+            assert col in out
+
+    def test_active_flag_filters_completed_and_idle(self, capsys, monkeypatch):
+        working = _make_terminal(window_id="1", status="working")
+        waiting = _make_terminal(window_id="2", status="waiting")
+        idle = _make_terminal(window_id="3", status="idle")
+        completed = _make_terminal(window_id="4", status="completed")
+        monkeypatch.setattr(
+            cli_module,
+            "list_alive_terminals",
+            lambda: [working, waiting, idle, completed],
+        )
+        rc = run(["list", "--active"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "共 2 个活跃终端" in out
+
+    def test_json_flag_emits_parseable_json(self, capsys, monkeypatch):
+        t = _make_terminal(window_id="42", tab_title="hello")
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [t])
+        rc = run(["list", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert len(data) == 1
+        assert data[0]["window_id"] == "42"
+        assert data[0]["tab_title"] == "hello"
+        assert data[0]["project_name"] == "my-project"
+        assert "idle_seconds" in data[0]
+
+
+class TestFocusCommand:
+    def test_focus_success_prints_tab_title(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli_module,
+            "load_registry",
+            lambda: {
+                "42": {
+                    "window_id": "42",
+                    "kitty_socket": "unix:@mykitty-1",
+                    "tab_title": "my-tab",
+                }
+            },
+        )
+        monkeypatch.setattr(cli_module, "focus_window", lambda s, w: (True, ""))
+        rc = run(["focus", "42"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "my-tab" in out
+        assert "42" in out
+
+    def test_focus_not_in_registry_prints_error_and_alive_list(
+        self, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(cli_module, "load_registry", lambda: {})
+        monkeypatch.setattr(
+            cli_module,
+            "list_alive_terminals",
+            lambda: [_make_terminal(window_id="42", tab_title="something")],
+        )
+        rc = run(["focus", "99"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "未找到" in err
+        assert "99" in err
+        assert "42" in err
+        assert "something" in err
+
+    def test_focus_not_in_registry_with_empty_alive_list(
+        self, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(cli_module, "load_registry", lambda: {})
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [])
+        rc = run(["focus", "99"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "未找到" in err
+
+    def test_focus_kitten_failure_propagates_error(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli_module,
+            "load_registry",
+            lambda: {
+                "42": {
+                    "window_id": "42",
+                    "kitty_socket": "unix:@mykitty-1",
+                    "tab_title": "my-tab",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            cli_module, "focus_window", lambda s, w: (False, "no matching window")
+        )
+        rc = run(["focus", "42"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no matching window" in err
