@@ -58,7 +58,13 @@ def load_registry() -> dict[str, dict]:
     if not isinstance(data, dict):
         logger.warning("%s is not a JSON object, ignoring", REGISTRY_PATH)
         return {}
-    return data
+    cleaned = {k: v for k, v in data.items() if isinstance(v, dict)}
+    if len(cleaned) != len(data):
+        logger.warning(
+            "%s contained %d non-dict entries, filtered out",
+            REGISTRY_PATH, len(data) - len(cleaned),
+        )
+    return cleaned
 
 
 KITTEN_LS_TIMEOUT = 5.0
@@ -110,6 +116,14 @@ def _get_alive_windows(socket: str) -> dict[str, dict]:
     return alive
 
 
+def _safe_float(value) -> float:
+    """Best-effort float conversion; returns 0.0 for any unparseable value."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def list_alive_terminals() -> list[TerminalInfo]:
     """Read registry and return currently alive TerminalInfo, sorted by recency.
 
@@ -148,8 +162,8 @@ def list_alive_terminals() -> list[TerminalInfo]:
                     cwd=entry.get("cwd", ""),
                     status=entry.get("status", "idle"),
                     agent_kind=entry.get("agent_kind", "claude"),
-                    last_activity=float(entry.get("last_activity", 0)),
-                    registered_at=float(entry.get("registered_at", 0)),
+                    last_activity=_safe_float(entry.get("last_activity", 0)),
+                    registered_at=_safe_float(entry.get("registered_at", 0)),
                 )
             )
 

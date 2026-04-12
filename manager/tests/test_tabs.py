@@ -1,8 +1,18 @@
 """Tests for claude-manager tabs subcommand."""
 
+import dataclasses
+import json
+import subprocess as sp
 import time
 
-from claude_manager.tabs.registry import TerminalInfo
+import pytest
+
+from claude_manager.tabs import registry as registry_module
+from claude_manager.tabs.registry import (
+    TerminalInfo,
+    list_alive_terminals,
+    load_registry,
+)
 
 
 class TestTerminalInfo:
@@ -49,7 +59,6 @@ class TestTerminalInfo:
         assert 119 <= info.idle_seconds <= 122
 
     def test_frozen_dataclass_rejects_mutation(self):
-        import dataclasses
         info = TerminalInfo(
             window_id="1",
             socket="unix:@mykitty-1",
@@ -60,18 +69,8 @@ class TestTerminalInfo:
             last_activity=0.0,
             registered_at=0.0,
         )
-        try:
-            info.status = "working"
-            raised = False
-        except dataclasses.FrozenInstanceError:
-            raised = True
-        assert raised, "TerminalInfo must be frozen"
-
-
-import json
-
-from claude_manager.tabs import registry as registry_module
-from claude_manager.tabs.registry import load_registry
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            info.status = "working"  # type: ignore[misc]
 
 
 class TestLoadRegistry:
@@ -115,8 +114,18 @@ class TestLoadRegistry:
         assert data["42"]["tab_title"] == "my-tab"
         assert data["42"]["status"] == "working"
 
-
-import subprocess as sp
+    def test_filters_out_non_dict_values(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        p.write_text(json.dumps({
+            "valid": {"window_id": "1", "kitty_socket": "unix:@m"},
+            "bogus_string": "not a dict",
+            "bogus_list": [1, 2, 3],
+        }))
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        data = load_registry()
+        assert "valid" in data
+        assert "bogus_string" not in data
+        assert "bogus_list" not in data
 
 
 class TestGetAliveWindows:
@@ -180,6 +189,7 @@ class TestGetAliveWindows:
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
             return sp.CompletedProcess(cmd, 0, "[]", "")
 
         monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
@@ -187,9 +197,7 @@ class TestGetAliveWindows:
         assert captured["cmd"] == [
             "kitten", "@", "--to", "unix:@mykitty-999", "ls"
         ]
-
-
-from claude_manager.tabs.registry import list_alive_terminals
+        assert captured["kwargs"].get("timeout") == registry_module.KITTEN_LS_TIMEOUT
 
 
 def _write_registry(path, entries):
@@ -325,6 +333,7 @@ class TestListAliveTerminals:
         monkeypatch.setattr(registry_module, "_get_alive_windows", fake_alive)
         result = list_alive_terminals()
         assert len(result) == 2
+        assert len(socket_calls) == 2
         assert set(socket_calls) == {"unix:@mykitty-A", "unix:@mykitty-B"}
 
     def test_skips_entries_without_socket(self, tmp_path, monkeypatch):
@@ -342,3 +351,27 @@ class TestListAliveTerminals:
             registry_module, "_get_alive_windows", lambda s: {}
         )
         assert list_alive_terminals() == []
+
+    def test_handles_malformed_timestamps(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "42": {
+                "window_id": "42",
+                "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "t",
+                "cwd": "/",
+                "status": "idle",
+                "agent_kind": "claude",
+                "registered_at": "not-a-number",
+                "last_activity": None,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        monkeypatch.setattr(
+            registry_module, "_get_alive_windows",
+            lambda s: {"42": {"tab_title": "t", "cwd": "/"}},
+        )
+        result = list_alive_terminals()
+        assert len(result) == 1
+        assert result[0].last_activity == 0.0
+        assert result[0].registered_at == 0.0
