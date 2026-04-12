@@ -66,3 +66,51 @@ class TestTerminalInfo:
         except dataclasses.FrozenInstanceError:
             raised = True
         assert raised, "TerminalInfo must be frozen"
+
+
+import json
+
+from claude_manager.tabs import registry as registry_module
+from claude_manager.tabs.registry import load_registry
+
+
+class TestLoadRegistry:
+    def test_returns_empty_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            registry_module, "REGISTRY_PATH", tmp_path / "nothing.json"
+        )
+        assert load_registry() == {}
+
+    def test_returns_empty_when_json_corrupt(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        p.write_text("not valid json")
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        assert load_registry() == {}
+
+    def test_returns_empty_when_top_level_not_dict(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        p.write_text("[]")
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        assert load_registry() == {}
+
+    def test_returns_parsed_dict_when_valid(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        payload = {
+            "42": {
+                "window_id": "42",
+                "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "my-tab",
+                "cwd": "/home/user/proj",
+                "status": "working",
+                "agent_kind": "claude",
+                "agent_name": "Claude",
+                "registered_at": 100.0,
+                "last_activity": 200.0,
+            }
+        }
+        p.write_text(json.dumps(payload))
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        data = load_registry()
+        assert "42" in data
+        assert data["42"]["tab_title"] == "my-tab"
+        assert data["42"]["status"] == "working"
