@@ -110,7 +110,8 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
         ]
         line = "  ".join(cells)
         if use_color and idx % 2 == 0:
-            print(f"{_BG_EVEN}{line}{_BG_RESET}")
+            # \033[K clears to end of line WITH current background color
+            print(f"{_BG_EVEN}{line}\033[K{_BG_RESET}")
         else:
             print(line)
     print()
@@ -178,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="claude-manager tabs",
         description="管理正在运行 Claude/Codex 的 kitty 终端",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p_list = sub.add_parser("list", help="列出所有活跃的终端")
     p_list.add_argument(
@@ -195,10 +196,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_focus.add_argument("window_id", help="kitty window_id")
     p_focus.set_defaults(func=cmd_focus)
 
+    p_select = sub.add_parser("select", help="交互式选择并跳转终端 (↑↓/jk 选择, Enter 跳转)")
+    p_select.set_defaults(func=lambda args: _cmd_select())
+
     return parser
+
+
+def _cmd_select() -> int:
+    from .interactive import run_interactive
+    return run_interactive()
 
 
 def run(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # No subcommand → default to interactive select (if tty) or list
+    if args.command is None:
+        if sys.stdout.isatty() and sys.stdin.isatty():
+            return _cmd_select()
+        return cmd_list(argparse.Namespace(active=False, json=False))
     return args.func(args)
