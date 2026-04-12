@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import termios
 import tty
@@ -11,77 +12,65 @@ from .kitty import focus_window
 from .registry import TerminalInfo, list_alive_terminals
 
 
-def _read_key() -> str:
-    """Read a single keypress. Returns special names for arrow keys."""
-    fd = sys.stdin.fileno()
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
-        seq = sys.stdin.read(1)
-        if seq == "[":
-            code = sys.stdin.read(1)
-            return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(
-                code, ""
-            )
+def _read_key(fd: int) -> str:
+    """Read a single keypress from raw fd. Returns action name."""
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
+        seq = os.read(fd, 1)
+        if seq == b"[":
+            code = os.read(fd, 1)
+            return {b"A": "up", b"B": "down"}.get(code, "")
         return "esc"
-    if ch in ("\r", "\n"):
+    if ch in (b"\r", b"\n"):
         return "enter"
-    if ch == "q":
+    if ch == b"q":
         return "quit"
-    if ch in ("j",):
+    if ch == b"j":
         return "down"
-    if ch in ("k",):
+    if ch == b"k":
         return "up"
-    return ch
+    return ""
 
 
-def _render(
-    terminals: list[TerminalInfo],
+def _write(s: str) -> None:
+    """Write string to stdout and flush."""
+    sys.stdout.write(s)
+    sys.stdout.flush()
+
+
+def _render_line(
+    t: TerminalInfo,
+    idx: int,
     selected: int,
     widths: list[int],
-    headers: list[str],
 ) -> str:
-    """Render the full table as a string with the selected row highlighted."""
-    _SEL_BG = "\033[48;5;24m"   # blue-ish background for selected row
-    _BG_EVEN = "\033[48;5;236m"  # dark gray for even rows (zebra)
-    _BG_RESET = "\033[49m"
+    """Render a single data row with appropriate background."""
+    _SEL_BG = "\033[48;5;24m"
+    _BG_EVEN = "\033[48;5;236m"
+    _BG_RESET = "\033[0m"
 
-    lines: list[str] = []
-
-    # Header
-    header_line = "  ".join(
-        _pad_right(h, widths[i]) for i, h in enumerate(headers)
+    status_colored = (
+        _STATUS_COLOR.get(t.status, "")
+        + _pad_right(t.status, widths[4])
+        + _RESET
     )
-    lines.append(f"\033[1m{header_line}\033[0m")  # bold header
 
-    for idx, t in enumerate(terminals):
-        status_colored = _STATUS_COLOR.get(t.status, "") + _pad_right(
-            t.status, widths[4]
-        ) + _RESET
+    cells = [
+        _pad_right(t.window_id, widths[0]),
+        _pad_right(t.tab_title, widths[1]),
+        _pad_right(t.project_name, widths[2]),
+        _pad_right(t.agent_kind, widths[3]),
+        status_colored,
+        format_time_ago(t.idle_seconds),
+    ]
+    content = "  ".join(cells)
 
-        cells = [
-            _pad_right(t.window_id, widths[0]),
-            _pad_right(t.tab_title, widths[1]),
-            _pad_right(t.project_name, widths[2]),
-            _pad_right(t.agent_kind, widths[3]),
-            status_colored,
-            format_time_ago(t.idle_seconds),
-        ]
-        line = "  ".join(cells)
-
-        if idx == selected:
-            # Selected row: distinct background + arrow indicator
-            lines.append(f"{_SEL_BG}> {line}\033[K{_BG_RESET}")
-        elif idx % 2 == 0:
-            lines.append(f"{_BG_EVEN}  {line}\033[K{_BG_RESET}")
-        else:
-            lines.append(f"  {line}\033[K")
-
-    lines.append("")
-    lines.append(
-        f"  \033[90m↑↓/jk 选择  Enter 跳转  q 退出  "
-        f"共 {len(terminals)} 个终端\033[0m"
-    )
-    return "\n".join(lines)
+    if idx == selected:
+        return f"{_SEL_BG}\033[1m> {content}\033[K{_BG_RESET}"
+    elif idx % 2 == 0:
+        return f"{_BG_EVEN}  {content}\033[K{_BG_RESET}"
+    else:
+        return f"  {content}\033[K"
 
 
 def _compute_widths(
@@ -102,6 +91,39 @@ def _compute_widths(
     return widths
 
 
+def _draw_full(
+    terminals: list[TerminalInfo],
+    selected: int,
+    widths: list[int],
+    headers: list[str],
+) -> None:
+    """Clear screen and draw the full table using absolute cursor positioning."""
+    buf: list[str] = []
+
+    # Clear screen, move cursor to top-left
+    buf.append("\033[2J\033[H")
+
+    # Header (bold)
+    header_line = "  ".join(
+        _pad_right(h, widths[i]) for i, h in enumerate(headers)
+    )
+    buf.append(f"  \033[1m{header_line}\033[0m")
+
+    # Data rows
+    for idx, t in enumerate(terminals):
+        buf.append(_render_line(t, idx, selected, widths))
+
+    # Footer
+    buf.append("")
+    buf.append(
+        f"  \033[90m↑↓/jk 选择  Enter 跳转  q/Esc 退出  "
+        f"共 {len(terminals)} 个终端\033[0m"
+    )
+
+    # Join with \r\n (raw mode needs explicit CR)
+    _write("\r\n".join(buf))
+
+
 def run_interactive() -> int:
     """Run the interactive terminal selector. Returns exit code."""
     terminals = list_alive_terminals()
@@ -112,28 +134,21 @@ def run_interactive() -> int:
     headers = ["ID", "TAB", "PROJECT", "AGENT", "STATUS", "IDLE"]
     widths = _compute_widths(terminals, headers)
     selected = 0
-    total_lines = len(terminals) + 3  # header + rows + blank + hint
 
-    # Save terminal state and switch to raw mode
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
 
-    # Hide cursor
-    sys.stdout.write("\033[?25l")
-    sys.stdout.flush()
+    # Switch to alternate screen buffer + hide cursor
+    _write("\033[?1049h\033[?25l")
 
     try:
         tty.setraw(fd)
-
-        # Initial render
-        output = _render(terminals, selected, widths, headers)
-        sys.stdout.write(output)
-        sys.stdout.flush()
+        _draw_full(terminals, selected, widths, headers)
 
         while True:
-            key = _read_key()
+            key = _read_key(fd)
 
-            if key == "quit" or key == "esc":
+            if key in ("quit", "esc"):
                 break
 
             if key == "up":
@@ -142,12 +157,9 @@ def run_interactive() -> int:
                 selected = (selected + 1) % len(terminals)
             elif key == "enter":
                 t = terminals[selected]
-                # Restore terminal before focus (so output is clean)
+                # Restore terminal BEFORE focus
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                sys.stdout.write("\033[?25h")  # show cursor
-                # Move to bottom and clear
-                sys.stdout.write(f"\033[{total_lines}B\r\n")
-                sys.stdout.flush()
+                _write("\033[?25h\033[?1049l")  # show cursor, leave alt screen
 
                 ok, err = focus_window(t.socket, t.window_id)
                 if ok:
@@ -161,16 +173,11 @@ def run_interactive() -> int:
             else:
                 continue
 
-            # Redraw: move cursor up to top, then rewrite
-            sys.stdout.write(f"\033[{total_lines}A\r")
-            output = _render(terminals, selected, widths, headers)
-            sys.stdout.write(output)
-            sys.stdout.flush()
+            _draw_full(terminals, selected, widths, headers)
 
     finally:
+        # Always restore terminal state
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        sys.stdout.write("\033[?25h")  # show cursor
-        sys.stdout.write(f"\r\n")
-        sys.stdout.flush()
+        _write("\033[?25h\033[?1049l")  # show cursor, leave alt screen
 
     return 0
