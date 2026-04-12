@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import subprocess as sp
+import sys
 import time
 
 import pytest
@@ -609,3 +610,32 @@ class TestFocusCommand:
         assert rc == 1
         err = capsys.readouterr().err
         assert "no matching window" in err
+
+
+class TestMainCliIntegration:
+    """Test that 'claude-manager tabs' routes to tabs.cli.run via main()."""
+
+    def test_main_routes_tabs_list(self, capsys, monkeypatch):
+        from claude_manager import cli as main_cli
+
+        monkeypatch.setattr(sys, "argv", ["claude-manager", "tabs", "list"])
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [])
+
+        rc = main_cli.main()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "没有活跃的终端" in out
+
+    def test_main_routes_tabs_focus_error(self, capsys, monkeypatch):
+        from claude_manager import cli as main_cli
+
+        monkeypatch.setattr(
+            sys, "argv", ["claude-manager", "tabs", "focus", "99"]
+        )
+        monkeypatch.setattr(cli_module, "load_registry", lambda: {})
+        monkeypatch.setattr(cli_module, "list_alive_terminals", lambda: [])
+
+        rc = main_cli.main()
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "未找到" in err
