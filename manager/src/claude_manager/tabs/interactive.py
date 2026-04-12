@@ -49,10 +49,13 @@ def _render_line(
     _BG_EVEN = "\033[48;5;236m"
     _BG_RESET = "\033[0m"
 
+    # Use \033[39m (reset foreground only) instead of \033[0m (reset all)
+    # to preserve the row background color through the IDLE column.
+    _FG_RESET = "\033[39m"
     status_colored = (
         _STATUS_COLOR.get(t.status, "")
         + _pad_right(t.status, widths[4])
-        + _RESET
+        + _FG_RESET
     )
 
     cells = [

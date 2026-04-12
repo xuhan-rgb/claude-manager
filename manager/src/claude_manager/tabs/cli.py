@@ -31,11 +31,15 @@ _STATUS_COLOR = {
 _RESET = "\033[0m"
 
 
+_FG_RESET = "\033[39m"  # reset foreground only, preserve background
+
+
 def _colorize(text: str, status: str, use_color: bool) -> str:
     if not use_color:
         return text
     color = _STATUS_COLOR.get(status, "")
-    return f"{color}{text}{_RESET}" if color else text
+    # Use _FG_RESET (not _RESET) to preserve row background through IDLE column.
+    return f"{color}{text}{_FG_RESET}" if color else text
 
 
 def _display_width(s: str) -> int:
