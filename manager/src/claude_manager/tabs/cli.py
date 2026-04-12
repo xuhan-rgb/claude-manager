@@ -90,8 +90,13 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
     def format_row(row: list[str]) -> str:
         return "  ".join(_pad_right(cell, widths[i]) for i, cell in enumerate(row))
 
+    # Zebra stripe: alternating row background for readability.
+    _BG_EVEN = "\033[48;5;236m"  # dark gray background
+    _BG_ODD = ""                 # terminal default
+    _BG_RESET = "\033[49m"       # reset background only
+
     print(format_row(headers))
-    for row, t in zip(rows, terminals):
+    for idx, (row, t) in enumerate(zip(rows, terminals)):
         # Colorize the status cell after padding.
         status_padded = _pad_right(t.status, widths[4])
         status_colored = _colorize(status_padded, t.status, use_color)
@@ -103,7 +108,11 @@ def _print_table(terminals: list[TerminalInfo], use_color: bool) -> None:
             status_colored,
             row[5],  # idle column — last, no padding needed
         ]
-        print("  ".join(cells))
+        line = "  ".join(cells)
+        if use_color and idx % 2 == 0:
+            print(f"{_BG_EVEN}{line}{_BG_RESET}")
+        else:
+            print(line)
     print()
     print(f"共 {len(terminals)} 个活跃终端")
 
