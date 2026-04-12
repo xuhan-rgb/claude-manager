@@ -108,3 +108,50 @@ def _get_alive_windows(socket: str) -> dict[str, dict]:
                     "cwd": win.get("cwd", ""),
                 }
     return alive
+
+
+def list_alive_terminals() -> list[TerminalInfo]:
+    """Read registry and return currently alive TerminalInfo, sorted by recency.
+
+    Workflow:
+    1. Load raw registry.
+    2. Group entries by socket.
+    3. For each socket, call `_get_alive_windows` once to get live window ids.
+    4. Filter out entries whose window_id is not in the live set.
+    5. Use live tab_title when available; fall back to registry value.
+    6. Sort by last_activity descending (most recent first).
+    """
+    raw = load_registry()
+    if not raw:
+        return []
+
+    by_socket: dict[str, list[dict]] = {}
+    for entry in raw.values():
+        socket = entry.get("kitty_socket", "")
+        if not socket:
+            continue
+        by_socket.setdefault(socket, []).append(entry)
+
+    results: list[TerminalInfo] = []
+    for socket, entries in by_socket.items():
+        alive = _get_alive_windows(socket)
+        for entry in entries:
+            wid = str(entry.get("window_id", ""))
+            if wid not in alive:
+                continue
+            live_tab_title = alive[wid].get("tab_title") or entry.get("tab_title", "")
+            results.append(
+                TerminalInfo(
+                    window_id=wid,
+                    socket=socket,
+                    tab_title=live_tab_title,
+                    cwd=entry.get("cwd", ""),
+                    status=entry.get("status", "idle"),
+                    agent_kind=entry.get("agent_kind", "claude"),
+                    last_activity=float(entry.get("last_activity", 0)),
+                    registered_at=float(entry.get("registered_at", 0)),
+                )
+            )
+
+    results.sort(key=lambda t: t.last_activity, reverse=True)
+    return results

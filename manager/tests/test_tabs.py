@@ -187,3 +187,158 @@ class TestGetAliveWindows:
         assert captured["cmd"] == [
             "kitten", "@", "--to", "unix:@mykitty-999", "ls"
         ]
+
+
+from claude_manager.tabs.registry import list_alive_terminals
+
+
+def _write_registry(path, entries):
+    path.write_text(json.dumps(entries))
+
+
+class TestListAliveTerminals:
+    def test_empty_when_registry_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            registry_module, "REGISTRY_PATH", tmp_path / "absent.json"
+        )
+        assert list_alive_terminals() == []
+
+    def test_filters_out_dead_windows(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "42": {
+                "window_id": "42",
+                "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "alive-tab-stale",
+                "cwd": "/home/a",
+                "status": "working",
+                "agent_kind": "claude",
+                "registered_at": 100.0,
+                "last_activity": 200.0,
+            },
+            "99": {
+                "window_id": "99",
+                "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "dead-tab",
+                "cwd": "/home/b",
+                "status": "idle",
+                "agent_kind": "claude",
+                "registered_at": 100.0,
+                "last_activity": 150.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        monkeypatch.setattr(
+            registry_module, "_get_alive_windows",
+            lambda socket: {
+                "42": {"tab_title": "alive-tab-fresh", "cwd": "/home/a"},
+            },
+        )
+        result = list_alive_terminals()
+        assert len(result) == 1
+        assert result[0].window_id == "42"
+
+    def test_live_tab_title_overrides_stale_registry(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "42": {
+                "window_id": "42",
+                "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "stale-name",
+                "cwd": "/home/a",
+                "status": "working",
+                "agent_kind": "claude",
+                "registered_at": 100.0,
+                "last_activity": 200.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        monkeypatch.setattr(
+            registry_module, "_get_alive_windows",
+            lambda socket: {
+                "42": {"tab_title": "fresh-name", "cwd": "/home/a"},
+            },
+        )
+        result = list_alive_terminals()
+        assert result[0].tab_title == "fresh-name"
+
+    def test_sorted_by_last_activity_desc(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "1": {
+                "window_id": "1", "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "old", "cwd": "/", "status": "idle",
+                "agent_kind": "claude", "registered_at": 0.0,
+                "last_activity": 100.0,
+            },
+            "2": {
+                "window_id": "2", "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "middle", "cwd": "/", "status": "idle",
+                "agent_kind": "claude", "registered_at": 0.0,
+                "last_activity": 500.0,
+            },
+            "3": {
+                "window_id": "3", "kitty_socket": "unix:@mykitty-1",
+                "tab_title": "newest", "cwd": "/", "status": "idle",
+                "agent_kind": "claude", "registered_at": 0.0,
+                "last_activity": 900.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        monkeypatch.setattr(
+            registry_module, "_get_alive_windows",
+            lambda socket: {
+                "1": {"tab_title": "old", "cwd": "/"},
+                "2": {"tab_title": "middle", "cwd": "/"},
+                "3": {"tab_title": "newest", "cwd": "/"},
+            },
+        )
+        result = list_alive_terminals()
+        assert [t.window_id for t in result] == ["3", "2", "1"]
+
+    def test_handles_multiple_sockets(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "1": {
+                "window_id": "1", "kitty_socket": "unix:@mykitty-A",
+                "tab_title": "a", "cwd": "/", "status": "idle",
+                "agent_kind": "claude", "registered_at": 0.0,
+                "last_activity": 100.0,
+            },
+            "2": {
+                "window_id": "2", "kitty_socket": "unix:@mykitty-B",
+                "tab_title": "b", "cwd": "/", "status": "idle",
+                "agent_kind": "codex", "registered_at": 0.0,
+                "last_activity": 200.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+
+        socket_calls = []
+        def fake_alive(socket):
+            socket_calls.append(socket)
+            return {
+                "unix:@mykitty-A": {"1": {"tab_title": "a", "cwd": "/"}},
+                "unix:@mykitty-B": {"2": {"tab_title": "b", "cwd": "/"}},
+            }[socket]
+
+        monkeypatch.setattr(registry_module, "_get_alive_windows", fake_alive)
+        result = list_alive_terminals()
+        assert len(result) == 2
+        assert set(socket_calls) == {"unix:@mykitty-A", "unix:@mykitty-B"}
+
+    def test_skips_entries_without_socket(self, tmp_path, monkeypatch):
+        p = tmp_path / "reg.json"
+        _write_registry(p, {
+            "42": {
+                "window_id": "42", "kitty_socket": "",
+                "tab_title": "t", "cwd": "/", "status": "idle",
+                "agent_kind": "claude", "registered_at": 0.0,
+                "last_activity": 100.0,
+            },
+        })
+        monkeypatch.setattr(registry_module, "REGISTRY_PATH", p)
+        monkeypatch.setattr(
+            registry_module, "_get_alive_windows", lambda s: {}
+        )
+        assert list_alive_terminals() == []
