@@ -603,25 +603,16 @@ tmux source-file ~/.tmux.conf
 
 自动发现所有 kitty 终端中运行的 Claude/Codex 实例，支持交互式选择跳转。
 
-提供两个等价的命令入口：
-- `agent-terminals` — 独立命令（推荐）
-- `claude-manager tabs` — 兼容入口
+```bash
+agent-terminals                        # 交互式选择（↑↓/jk 选择，Enter 跳转，q 退出）
+agent-terminals list                   # 列出所有活跃终端
+agent-terminals list --active          # 只看 working/waiting 状态
+agent-terminals list --json            # JSON 格式输出
+agent-terminals focus <terminal_id>    # 跳转到指定终端
+# 等价入口：claude-manager tabs list / claude-manager tabs focus <terminal_id>
+```
 
-### 命令速查
-
-| 命令 | 功能 |
-|------|------|
-| `agent-terminals` | 交互式选择（↑↓/jk 选择，Enter 跳转，q 退出） |
-| `agent-terminals list` | 列出所有活跃终端 |
-| `agent-terminals list --active` | 只看 working/waiting 状态 |
-| `agent-terminals list --json` | JSON 格式输出（方便脚本化） |
-| `agent-terminals focus <terminal_id>` | 跳转到指定终端 |
-| `agent-terminals select` | 显式进入交互模式 |
-
-> `claude-manager tabs list` / `claude-manager tabs focus` 等价可用。
-
-### 输出示例
-
+**输出示例**：
 ```
 ID                  TAB                                          PROJECT         AGENT   STATUS     IDLE
 2@mykitty-324733    Add project management and recovery feature  claude-manager  claude  working    刚刚
@@ -630,35 +621,11 @@ ID                  TAB                                          PROJECT        
 1@mykitty-1827907   data                                         data            codex   completed  6分钟前
 ```
 
-ID 格式为 `window_id@socket_label`，用于唯一标识跨 kitty 实例的终端。
-
-### 工作原理
-
-1. Claude Code hook（`on-tool-use.sh` 等）在每次工具调用时将当前 kitty window 信息写入 `/tmp/feishu-bridge/registry.json`
-2. `list` 读取 registry，对每个 kitty socket 调 `kitten @ ls` 做活性过滤（剔除已关闭的 tab）
-3. `focus` 调用 `kitten @ focus-window --match id:<window_id>` 实现跳转
-
 ### 已知限制
 
-**仅支持 kitty 终端直接启动的 Claude/Codex**。以下场景无法发现：
-
-| 场景 | 原因 | 状态 |
-|------|------|------|
-| gnome-terminal / VS Code 终端 | 没有 `$KITTY_WINDOW_ID` 环境变量 | 不支持 |
-| SSH 远程终端 | 同上 | 不支持 |
-| **tmux 内的 Claude** | 见下方详细说明 | 部分支持 |
-
-**tmux 内 Claude 发现问题（详细）**：
-
-在 kitty tab 里通过 tmux 运行 Claude 时，存在三层障碍：
-
-1. **环境变量不传递**：tmux 默认不传递 `$KITTY_WINDOW_ID` 和 `$KITTY_LISTEN_ON` 到子 session。已通过在 `tmux.conf` 添加 `set -ga update-environment " KITTY_WINDOW_ID"` 缓解，但仅对**新建的 tmux session** 生效，已存在的 session 需要重新 attach。
-
-2. **Window ID 冲突**：同一个 kitty window 内的多个 tmux pane 共享同一个 `$KITTY_WINDOW_ID`。registry 以 terminal_id（`window_id@socket`）为 key，多个 Claude 实例会互相覆盖，只有最后活跃的那个出现在列表里。
-
-3. **Window ID 错位**：`claude-manager` TUI 创建 tmux session 时继承的是 TUI 面板的 kitty window ID，而非右侧工作区面板的 ID。`focus` 跳转会跳到 TUI 面板而非 Claude 实际运行的窗口。
-
-> **后续计划**：通过进程扫描（`ps aux | grep claude`）作为 fallback 补充发现，或扩展 hook 让 tmux 内的 Claude 用 `$TMUX_PANE` 作为标识。
+- 仅支持 **kitty 终端直接启动** 的 Claude/Codex
+- **tmux 内的 Claude 暂时无法被发现**（环境变量传递、ID 冲突等问题，详见 CLAUDE.md）
+- gnome-terminal、VS Code 终端、SSH 远程终端暂不支持
 
 ---
 
