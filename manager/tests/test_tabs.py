@@ -114,3 +114,76 @@ class TestLoadRegistry:
         assert "42" in data
         assert data["42"]["tab_title"] == "my-tab"
         assert data["42"]["status"] == "working"
+
+
+import subprocess as sp
+
+
+class TestGetAliveWindows:
+    def test_parses_kitten_ls_output(self, monkeypatch):
+        fake_stdout = json.dumps([
+            {
+                "tabs": [
+                    {
+                        "title": "tab-one",
+                        "windows": [
+                            {"id": 10, "cwd": "/home/a"},
+                            {"id": 11, "cwd": "/home/b"},
+                        ],
+                    },
+                    {
+                        "title": "tab-two",
+                        "windows": [
+                            {"id": 20, "cwd": "/home/c"},
+                        ],
+                    },
+                ]
+            }
+        ])
+
+        def fake_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, 0, fake_stdout, "")
+
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        result = registry_module._get_alive_windows("unix:@mykitty-1")
+        assert set(result.keys()) == {"10", "11", "20"}
+        assert result["10"]["tab_title"] == "tab-one"
+        assert result["20"]["tab_title"] == "tab-two"
+        assert result["10"]["cwd"] == "/home/a"
+
+    def test_returns_empty_on_nonzero_exit(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, 1, "", "connection refused")
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        assert registry_module._get_alive_windows("unix:@mykitty-1") == {}
+
+    def test_returns_empty_on_timeout(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise sp.TimeoutExpired(cmd=cmd, timeout=5)
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        assert registry_module._get_alive_windows("unix:@mykitty-1") == {}
+
+    def test_returns_empty_when_kitten_missing(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("kitten")
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        assert registry_module._get_alive_windows("unix:@mykitty-1") == {}
+
+    def test_returns_empty_on_malformed_json(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, 0, "not-json", "")
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        assert registry_module._get_alive_windows("unix:@mykitty-1") == {}
+
+    def test_passes_socket_to_kitten(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return sp.CompletedProcess(cmd, 0, "[]", "")
+
+        monkeypatch.setattr(registry_module.subprocess, "run", fake_run)
+        registry_module._get_alive_windows("unix:@mykitty-999")
+        assert captured["cmd"] == [
+            "kitten", "@", "--to", "unix:@mykitty-999", "ls"
+        ]

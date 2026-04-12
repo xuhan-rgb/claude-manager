@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,3 +59,52 @@ def load_registry() -> dict[str, dict]:
         logger.warning("%s is not a JSON object, ignoring", REGISTRY_PATH)
         return {}
     return data
+
+
+KITTEN_LS_TIMEOUT = 5.0
+
+
+def _get_alive_windows(socket: str) -> dict[str, dict]:
+    """Query `kitten @ ls` for a single socket and return live windows.
+
+    Returns dict mapping window_id (str) -> {"tab_title": str, "cwd": str}.
+    On any failure (nonzero exit, timeout, missing kitten, malformed JSON)
+    returns an empty dict — never raises.
+    """
+    try:
+        result = subprocess.run(
+            ["kitten", "@", "--to", socket, "ls"],
+            capture_output=True,
+            text=True,
+            timeout=KITTEN_LS_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.warning("kitten @ ls failed for socket %s: %s", socket, e)
+        return {}
+
+    if result.returncode != 0:
+        logger.debug(
+            "kitten @ ls nonzero rc=%d for %s: %s",
+            result.returncode, socket, result.stderr.strip(),
+        )
+        return {}
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        logger.warning("kitten @ ls returned non-JSON for %s", socket)
+        return {}
+
+    alive: dict[str, dict] = {}
+    for os_window in data:
+        for tab in os_window.get("tabs", []):
+            tab_title = tab.get("title", "")
+            for win in tab.get("windows", []):
+                wid = str(win.get("id", ""))
+                if not wid:
+                    continue
+                alive[wid] = {
+                    "tab_title": tab_title,
+                    "cwd": win.get("cwd", ""),
+                }
+    return alive
