@@ -1,2 +1,0 @@
-[console_scripts]
-claude-manager = claude_manager.cli:main

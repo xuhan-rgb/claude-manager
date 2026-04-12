@@ -4,6 +4,7 @@
 
 ## 功能特性
 
+- **终端发现**: 自动发现所有运行中的 Claude/Codex 终端，交互式跳转
 - **任务管理**: 创建、追踪、管理开发任务
 - **多终端支持**: 同时管理多个终端窗口（Claude、Codex、Shell、ROS2 等）
 - **状态检测**: 自动检测 AI 任务状态（运行中/已完成/等待确认）
@@ -73,6 +74,7 @@ ta / tab-alert     # 标记为红色
 **适用场景**：复杂多任务开发（ROS2、多项目并行）、需要集中管理多个 Claude 会话
 
 **特点**：
+- ✅ **终端发现** — 自动发现并列出所有 Claude/Codex 终端，交互式跳转
 - ✅ TUI 任务管理面板（创建/删除/切换任务，禁止重名）
 - ✅ 自动任务状态检测（运行中/已完成）
 - ✅ 工作目录路径补全（输入提示 + ↓ 弹出目录列表浏览）
@@ -86,30 +88,28 @@ ta / tab-alert     # 标记为红色
 
 **安装**：
 ```bash
-pip install -e manager/
+cd manager && ./install.sh
 ```
 
-⚠️ **配置改变**（Tmux + TUI 相关）：
-- 复制 `~/.tmux.conf`（Tmux 优化配置）
-- 保存任务数据到 `~/.local/share/claude-manager/`
-- 保存配置到 `~/.config/claude-manager/`
+> 安装脚本会自动用 `uv` 创建 Python 3.10 虚拟环境、editable 安装、软链接 `claude-manager` 命令到 `~/.local/bin/`。卸载：`./install.sh --uninstall`
 
-**启动**：
+**终端发现与跳转**（安装后即可用）：
 ```bash
-# 启动 TUI 管理器（自动创建分屏）
-claude-manager
-
-# 查看环境配置
-claude-manager --check
-
-# 启用调试面板
-claude-manager --debug
+claude-manager tabs              # 交互式选择（↑↓ 选择，Enter 跳转，q 退出）
+claude-manager tabs list         # 列表模式
+claude-manager tabs list --active  # 只看 working/waiting
+claude-manager tabs list --json  # JSON 输出
+claude-manager tabs focus <id>   # 按 ID 直接跳转
 ```
 
-**快速键**（详见下方 TUI 快捷键说明）：
-- `n` - 新建任务
-- `Enter` - 激活任务
-- `1-5` - 快速切换
+**TUI 管理器**（需要 tmux）：
+```bash
+claude-manager                   # 启动 TUI（自动创建分屏）
+claude-manager --check           # 查看环境配置
+claude-manager --debug           # 启用调试面板
+```
+
+**TUI 快速键**：`n` 新建任务 / `Enter` 激活 / `1-5` 快速切换
 
 详细说明：见 [Claude Manager 使用](#claude-manager-使用) 章节
 
@@ -133,8 +133,11 @@ claude-manager --debug
 # Ubuntu/Debian
 sudo apt install kitty tmux xclip
 
-# Python 依赖（在仓库根目录执行）
-pip install -e manager/
+# 安装 uv（如果没有）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安装 Claude Manager
+cd manager && ./install.sh
 ```
 
 ---
@@ -574,9 +577,43 @@ tmux source-file ~/.tmux.conf
 
 ---
 
-## Claude Manager 使用
+## 终端发现与跳转
 
-⚠️ **注意**：Claude Manager TUI 方案仍在优化中，推荐优先使用 [方式一：Kitty 优化](#方式一kitty-优化-推荐快速开始) 进行日常开发。
+列出所有 kitty 终端中运行的 Claude/Codex 实例，支持交互式选择跳转。
+
+### 命令速查
+
+| 命令 | 功能 |
+|------|------|
+| `claude-manager tabs` | 交互式选择（↑↓/jk 选择，Enter 跳转，q 退出） |
+| `claude-manager tabs list` | 列出所有活跃终端 |
+| `claude-manager tabs list --active` | 只看 working/waiting 状态 |
+| `claude-manager tabs list --json` | JSON 格式输出（方便脚本化） |
+| `claude-manager tabs focus <id>` | 按 window_id 跳转到指定终端 |
+
+### 输出示例
+
+```
+ID  TAB                                          PROJECT         AGENT   STATUS     IDLE
+2   Add project management and recovery feature  claude-manager  claude  completed  1分钟前
+18  Build flight ticket scraper web application   dev-scripts     claude  working    7分钟前
+12  qwer@host: ~                                  flow            claude  waiting    15分钟前
+7   Claude Code                                   papers          claude  waiting    2小时前
+```
+
+### 工作原理
+
+1. Claude Code hook（`on-tool-use.sh` 等）在每次工具调用时将当前 kitty window 信息写入 `/tmp/feishu-bridge/registry.json`
+2. `tabs list` 读取 registry，对每个 kitty socket 调 `kitten @ ls` 做活性过滤（剔除已关闭的 tab）
+3. `tabs focus` 调用 `kitten @ focus-window --match id:<window_id>` 实现跳转
+
+> 当前仅支持 kitty 终端。在 gnome-terminal、VS Code 等非 kitty 环境中运行的 Claude 不会被发现。
+
+---
+
+## Claude Manager TUI
+
+⚠️ **注意**：TUI 方案仍在优化中，推荐优先使用 [方式一：Kitty 优化](#方式一kitty-优化-推荐快速开始) 进行日常开发。
 
 ### 启动方式
 
