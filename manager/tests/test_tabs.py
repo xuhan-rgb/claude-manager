@@ -7,7 +7,9 @@ import time
 
 import pytest
 
+from claude_manager.tabs import kitty as kitty_module
 from claude_manager.tabs import registry as registry_module
+from claude_manager.tabs.kitty import focus_window
 from claude_manager.tabs.registry import (
     TerminalInfo,
     list_alive_terminals,
@@ -375,3 +377,59 @@ class TestListAliveTerminals:
         assert len(result) == 1
         assert result[0].last_activity == 0.0
         assert result[0].registered_at == 0.0
+
+
+class TestFocusWindow:
+    def test_success_invokes_kitten_with_correct_args(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return sp.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(kitty_module.subprocess, "run", fake_run)
+        ok, err = focus_window("unix:@mykitty-1", "42")
+        assert ok is True
+        assert err == ""
+        assert captured["cmd"] == [
+            "kitten", "@", "--to", "unix:@mykitty-1",
+            "focus-window", "--match", "id:42",
+        ]
+        assert captured["kwargs"].get("timeout") == kitty_module.FOCUS_TIMEOUT
+
+    def test_failure_returns_stderr(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, 1, "", "no matching window")
+
+        monkeypatch.setattr(kitty_module.subprocess, "run", fake_run)
+        ok, err = focus_window("unix:@mykitty-1", "99")
+        assert ok is False
+        assert "no matching window" in err
+
+    def test_failure_generic_message_when_stderr_empty(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, 2, "", "")
+
+        monkeypatch.setattr(kitty_module.subprocess, "run", fake_run)
+        ok, err = focus_window("unix:@mykitty-1", "99")
+        assert ok is False
+        assert err  # non-empty fallback message
+
+    def test_timeout(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise sp.TimeoutExpired(cmd=cmd, timeout=3)
+
+        monkeypatch.setattr(kitty_module.subprocess, "run", fake_run)
+        ok, err = focus_window("unix:@mykitty-1", "42")
+        assert ok is False
+        assert "timed out" in err
+
+    def test_kitten_not_found(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("kitten")
+
+        monkeypatch.setattr(kitty_module.subprocess, "run", fake_run)
+        ok, err = focus_window("unix:@mykitty-1", "42")
+        assert ok is False
+        assert "not found" in err
