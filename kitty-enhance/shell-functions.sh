@@ -7,6 +7,11 @@
 # 基础目录（从本文件位置推导，支持 repo 和安装后两种场景）
 _KITTY_ENHANCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# Claude 默认 flags：tab-save 时若 cmdline 缺这些 flag，自动补回到 launch 命令。
+# 用 := 让用户可在 source 之前自定义（含设为空串以禁用）。
+: "${CLAUDE_DEFAULT_FLAGS:=--dangerously-skip-permissions}"
+export CLAUDE_DEFAULT_FLAGS
+
 # 使用 kitty 环境变量获取 socket
 _kitty_socket() {
     echo "${KITTY_LISTEN_ON:-unix:@mykitty}"
@@ -128,6 +133,12 @@ tab-done() {
 }
 
 codex() {
+    local wrapper="$HOME/.local/bin/codex"
+    if [ -x "$wrapper" ]; then
+        "$wrapper" "$@"
+        return $?
+    fi
+
     _start_codex_notify_monitor "$@"
     command codex "$@"
 }
@@ -405,4 +416,3 @@ Kitty Tab 管理命令 (kitty-enhance)
   输入 tab-help 查看本帮助
 HELP
 }
-

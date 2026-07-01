@@ -25,6 +25,7 @@ print_help() {
     echo "选项："
     echo "  --bridge-only  仅安装飞书桥接（不替换 kitty 配置）"
     echo "  --full         完整安装（默认，含 kitty 配置定制）"
+    echo "  --qq-only      仅安装 qq 到 ~/.local/bin（跳过其它一切）"
     echo "  -h, --help     显示帮助"
 }
 
@@ -174,6 +175,34 @@ check_dependencies() {
     fi
 
     success "依赖检查通过"
+}
+
+# 安装 qq 到 ~/.local/bin/qq
+install_qq() {
+    info "安装 qq..."
+    mkdir -p "$HOME/.local/bin"
+    cp "$(pwd)/bin/qq" "$HOME/.local/bin/qq"
+    chmod +x "$HOME/.local/bin/qq"
+    success "qq → $HOME/.local/bin/qq"
+}
+
+# 安装 Codex PATH wrapper
+install_codex_wrapper() {
+    info "安装 Codex wrapper..."
+
+    local src="$(pwd)/bin/codex"
+    local dst="$HOME/.local/bin/codex"
+    mkdir -p "$HOME/.local/bin"
+
+    if [ -e "$dst" ] && ! cmp -s "$src" "$dst" 2>/dev/null; then
+        local backup="$dst.bak.$(date +%Y%m%d_%H%M%S)"
+        mv "$dst" "$backup"
+        info "已备份旧 codex 到: $backup"
+    fi
+
+    cp "$src" "$dst"
+    chmod +x "$dst"
+    success "codex wrapper → $dst"
 }
 
 # 安装 Kitty 配置
@@ -390,6 +419,13 @@ verify_installation() {
         success "Kitty 脚本已安装"
     fi
 
+    if [ -x "$HOME/.local/bin/codex" ]; then
+        success "Codex wrapper 已安装"
+    else
+        error "Codex wrapper 未安装"
+        ((errors++))
+    fi
+
     # 检查 hooks
     local hook_ok=true
     for h in on-stop.sh on-notify.sh on-tool-use.sh tab-color-common.sh; do
@@ -479,10 +515,17 @@ main() {
         case "$1" in
             --bridge-only) INSTALL_MODE="bridge-only"; shift ;;
             --full)        INSTALL_MODE="full"; shift ;;
+            --qq-only)     INSTALL_MODE="qq-only"; shift ;;
             -h|--help)     print_help; exit 0 ;;
             *)             error "未知参数: $1"; print_help; exit 1 ;;
         esac
     done
+
+    # qq-only 模式：装完 qq 直接退出
+    if [ "$INSTALL_MODE" = "qq-only" ]; then
+        install_qq
+        exit 0
+    fi
 
     echo ""
     if [ "$INSTALL_MODE" = "bridge-only" ]; then
@@ -503,11 +546,14 @@ main() {
         install_kitty_config
         install_kitty_scripts
         install_shell_functions
+        install_qq
+        install_codex_wrapper
         echo ""
         # full 模式：符号链接到 ~/.claude/hooks/，settings.json 指向该目录
         install_claude_hooks
         configure_claude_hooks "$HOME/.claude/hooks" "full"
     else
+        install_qq
         ensure_kitty_remote_control
         echo ""
         # bridge-only 模式：安全安装 hooks

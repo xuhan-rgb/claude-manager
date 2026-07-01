@@ -21,7 +21,11 @@ from pathlib import Path
 SESSION_IDLE_GRACE_SECONDS = 8.0
 SESSION_DISCOVERY_TIMEOUT_SECONDS = 15.0
 POLL_INTERVAL_SECONDS = 0.5
-SUPPORTED_ORIGINATORS = {"codex-tui", "codex_exec"}
+SUPPORTED_ORIGINATORS = {"codex-tui", "codex_cli_rs", "codex_exec"}
+
+
+def is_supported_originator(originator: str) -> bool:
+    return not originator or originator.lower() in SUPPORTED_ORIGINATORS
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,8 +109,8 @@ class CodexEventMonitor:
             if not meta:
                 continue
 
-            originator = str(meta.get("originator", "")).lower()
-            if originator and originator not in SUPPORTED_ORIGINATORS:
+            originator = str(meta.get("originator", ""))
+            if not is_supported_originator(originator):
                 continue
 
             session_cwd = meta.get("cwd", "")

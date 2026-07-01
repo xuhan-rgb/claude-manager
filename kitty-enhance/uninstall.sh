@@ -5,6 +5,7 @@ set -e
 KITTY_SCRIPTS_DIR="$HOME/.config/kitty/scripts"
 CLAUDE_HOOKS_DIR="$HOME/.claude/hooks"
 KITTY_CONF="$HOME/.config/kitty/kitty.conf"
+LOCAL_CODEX_WRAPPER="$HOME/.local/bin/codex"
 
 echo "=========================================="
 echo "  卸载 kitty-enhance"
@@ -58,6 +59,10 @@ for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zshrc_custom"; do
         sed -i '\|claude-manager/shell-functions.sh\|d' "$rc_file"
     fi
 done
+
+if [ -f "$LOCAL_CODEX_WRAPPER" ] && grep -q "kitty-enhance codex wrapper" "$LOCAL_CODEX_WRAPPER"; then
+    rm -f "$LOCAL_CODEX_WRAPPER"
+fi
 echo "  -> 已清理"
 
 echo ""

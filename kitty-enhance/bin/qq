@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# qq - "Quick (sub-)Question". Spawn a new xterm with claude forked from the
+# current directory's most recently active Claude Code session. Lets you
+# branch off side questions without polluting the main conversation.
+#
+# Usage: ! qq    (from inside Claude Code; type your question in the new window)
+
+set -eu
+
+setsid -f xterm -T "qq side-question" \
+    -e claude --continue --fork-session </dev/null >/dev/null 2>&1
