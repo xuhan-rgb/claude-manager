@@ -17,6 +17,11 @@ warning() { echo -e "${YELLOW}⚠️${NC}  $*"; }
 error() { echo -e "${RED}❌${NC} $*"; }
 
 INSTALL_MODE="full"
+KITTY_MIN_VERSION="0.26.0"
+
+version_at_least() {
+    [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]
+}
 
 # 帮助信息
 print_help() {
@@ -174,7 +179,16 @@ check_dependencies() {
         exit 1
     fi
 
-    success "依赖检查通过"
+    local kitty_version
+    kitty_version=$(kitty --version 2>/dev/null | awk 'NR == 1 {print $2}')
+    if [ -z "$kitty_version" ] || ! version_at_least "$KITTY_MIN_VERSION" "$kitty_version"; then
+        error "Kitty ${kitty_version:-未知版本} 过旧，需要 >= $KITTY_MIN_VERSION"
+        echo "  官方用户级安装："
+        echo "  curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin launch=n"
+        exit 1
+    fi
+
+    success "依赖检查通过（Kitty $kitty_version）"
 }
 
 # 安装 qq 到 ~/.local/bin/qq
