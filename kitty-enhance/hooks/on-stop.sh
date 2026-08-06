@@ -45,7 +45,10 @@ if [ "$_TAB_COLOR" = true ]; then
             fi
             debug "window focused, skip red"
         else
+            local_sf=$(_state_file "$KITTY_SOCKET" "$TAB_ID")
             set_tab_color "$KITTY_SOCKET" "$TAB_ID" "red"
+            # 创建 tabcache，让 precmd hook 能在用户切换到该 tab 时自动清除红色
+            echo "$local_sf" > "/tmp/kitty-tabcache-${WINDOW_ID}"
             rm -f "/tmp/kitty-tab-${TAB_ID}-stop"
             ensure_poller "$KITTY_SOCKET"
         fi
