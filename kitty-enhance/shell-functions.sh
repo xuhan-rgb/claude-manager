@@ -416,3 +416,22 @@ Kitty Tab 管理命令 (kitty-enhance)
   输入 tab-help 查看本帮助
 HELP
 }
+
+# ========================================
+# Work Status - 监控所有 Kitty 窗口的工作进度
+# ========================================
+
+work-status() {
+    # 检查命令是否存在
+    if ! command -v work-status >/dev/null 2>&1; then
+        echo "错误: work-status 命令未找到"
+        echo "请运行: cd /mnt/data/claude-manager/manager && ./install.sh"
+        return 1
+    fi
+
+    # 直接调用命令
+    command work-status "$@"
+}
+
+# 简写
+alias ws='work-status'

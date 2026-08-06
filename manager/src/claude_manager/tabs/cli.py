@@ -240,12 +240,86 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     p_select = sub.add_parser("select", help="交互式选择并跳转终端 (↑↓/jk 选择, Enter 跳转)")
     p_select.set_defaults(func=lambda args: _cmd_select())
 
+    p_work = sub.add_parser("work-status", help="显示所有 Kitty 窗口的工作进度")
+    p_work.add_argument(
+        "--active-only", action="store_true",
+        help="仅显示有 AI 助手运行的 tab",
+    )
+    p_work.add_argument(
+        "--json", action="store_true",
+        help="输出 JSON 格式",
+    )
+    p_work.add_argument(
+        "--no-interactive", action="store_true",
+        help="禁用交互式跳转",
+    )
+    p_work.set_defaults(func=cmd_work_status)
+
     return parser
 
 
 def _cmd_select() -> int:
     from .interactive import run_interactive
     return run_interactive()
+
+
+def cmd_work_status(args: argparse.Namespace) -> int:
+    """work-status 命令：显示所有 Kitty 窗口的工作进度"""
+    from .work_status import scan_all_windows, format_work_status, format_work_status_json
+
+    windows = scan_all_windows()
+
+    if args.json:
+        print(format_work_status_json(windows))
+        return 0
+
+    output = format_work_status(windows, active_only=args.active_only)
+    print(output)
+
+    # 交互式跳转
+    if not args.no_interactive and sys.stdin.isatty():
+        try:
+            choice = input("\n输入编号跳转 (或按 Enter 退出): ").strip()
+            if choice.isdigit():
+                return _jump_to_index(windows, int(choice))
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 0
+
+    return 0
+
+
+def _jump_to_index(windows: list, index: int) -> int:
+    """跳转到指定编号的 tab"""
+    from .kitty import focus_window
+    import subprocess
+
+    item_count = 0
+    for os_win in windows:
+        for tab in os_win.tabs:
+            item_count += 1
+            if item_count == index:
+                # 先聚焦 OS Window，再聚焦 Tab
+                ok, err = focus_window(os_win.socket, tab.tab_id)
+                if not ok:
+                    print(f"错误: {err}", file=sys.stderr)
+                    return 1
+
+                # 聚焦 tab
+                try:
+                    subprocess.run(
+                        ['kitty', '@', '--to', os_win.socket, 'focus-tab', '--match', f'id:{tab.tab_id}'],
+                        capture_output=True,
+                        timeout=3
+                    )
+                except Exception as e:
+                    print(f"警告: 切换 tab 失败: {e}", file=sys.stderr)
+
+                print(f'已跳转到 Tab {tab.tab_id}: {tab.title}')
+                return 0
+
+    print(f"错误: 编号 {index} 不存在", file=sys.stderr)
+    return 1
 
 
 def run(argv: list[str], prog: str = "agent-terminals") -> int:
