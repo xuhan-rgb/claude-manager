@@ -89,9 +89,12 @@ def _extract_ai_processes(windows: list[dict]) -> list[AIProcess]:
             if not cmdline:
                 continue
 
-            # 检查是否是 claude 或 codex
-            cmd_str = ' '.join(cmdline).lower()
-            if 'claude' in cmd_str or 'codex' in cmd_str:
+            # 检查第一个参数（可执行文件名）
+            cmd_name = cmdline[0].lower()
+            base_name = cmd_name.split('/')[-1]  # 提取文件名部分
+
+            # 严格匹配：只有可执行文件名是 claude 或 codex 才算
+            if base_name in ('claude', 'codex'):
                 processes.append(AIProcess(
                     name=cmdline[0],
                     cwd=proc.get('cwd', ''),
