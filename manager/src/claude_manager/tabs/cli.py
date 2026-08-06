@@ -242,6 +242,10 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
 
     p_work = sub.add_parser("work-status", help="显示所有 Kitty 窗口的工作进度")
     p_work.add_argument(
+        "-i", "--interactive", action="store_true",
+        help="交互式选择模式（方向键/jk 选择，Enter 跳转）",
+    )
+    p_work.add_argument(
         "--active-only", action="store_true",
         help="仅显示有 AI 助手运行的 tab",
     )
@@ -266,6 +270,11 @@ def _cmd_select() -> int:
 def cmd_work_status(args: argparse.Namespace) -> int:
     """work-status 命令：显示所有 Kitty 窗口的工作进度"""
     from .work_status import scan_all_windows, format_work_status, format_work_status_json
+
+    # 交互模式
+    if args.interactive:
+        from .work_status_interactive import run_interactive_work_status
+        return run_interactive_work_status()
 
     windows = scan_all_windows()
 

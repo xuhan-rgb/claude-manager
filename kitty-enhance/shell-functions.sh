@@ -409,6 +409,11 @@ Kitty Tab 管理命令 (kitty-enhance)
     tab-list              列出已保存的 session
     tab-delete <name>     删除 session
 
+  工作进度监控:
+    work-status, ws       查看所有 Kitty 窗口的工作进度
+    work-status -i        交互式选择（方向键/jk，Enter 跳转）
+    work-status --active-only  仅显示有 AI 助手的 tab
+
   窗口:
     win-lock              锁定窗口（禁用关闭按钮）
     win-unlock            解锁窗口
