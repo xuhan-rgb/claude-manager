@@ -38,10 +38,7 @@ class AIProcess:
             rel = cwd_path.relative_to(home)
             return f"~/{rel}"
         except ValueError:
-            # 不在 home 下，显示最后 3 级
-            parts = cwd_path.parts
-            if len(parts) > 3:
-                return ".../" + "/".join(parts[-3:])
+            # 不在 home 下，返回完整路径
             return str(cwd_path)
 
 
