@@ -56,41 +56,51 @@ def _render_item(
     _SEL_BG = "\033[48;5;24m"
     _BG_EVEN = "\033[48;5;236m"
     _BG_RESET = "\033[0m"
+    _BOLD = "\033[1m"
+    _RESET = "\033[0m"
 
     lines = []
+    is_selected = (idx == selected)
+    is_even = (idx % 2 == 0)
 
     # Tab 标题行
     focus_mark = " [聚焦]" if tab.is_focused else ""
     title = f"Tab {tab.tab_id}: {tab.title}{focus_mark}"
-    title = _truncate(title, term_width - 8)
 
-    if idx == selected:
-        lines.append(f"{_SEL_BG}\033[1m> {title}\033[K{_BG_RESET}")
-    elif idx % 2 == 0:
-        lines.append(f"{_BG_EVEN}  {title}\033[K{_BG_RESET}")
+    # 不要截断，让终端自动换行
+    if is_selected:
+        line = f"{_SEL_BG}{_BOLD}> {title}{_RESET}{_BG_RESET}"
+    elif is_even:
+        line = f"{_BG_EVEN}  {title}{_RESET}"
     else:
-        lines.append(f"  {title}\033[K")
+        line = f"  {title}{_RESET}"
+
+    lines.append(line)
 
     # AI 进程列表（缩进显示）
     if tab.ai_processes:
         for proc in tab.ai_processes:
             ai_line = f"    ● {proc.display_name} → {proc.short_cwd}"
-            ai_line = _truncate(ai_line, term_width - 4)
 
-            if idx == selected:
-                lines.append(f"{_SEL_BG}  {ai_line}\033[K{_BG_RESET}")
-            elif idx % 2 == 0:
-                lines.append(f"{_BG_EVEN}  {ai_line}\033[K{_BG_RESET}")
+            if is_selected:
+                line = f"{_SEL_BG}  {ai_line}{_RESET}{_BG_RESET}"
+            elif is_even:
+                line = f"{_BG_EVEN}  {ai_line}{_RESET}"
             else:
-                lines.append(f"  {ai_line}\033[K")
+                line = f"  {ai_line}{_RESET}"
+
+            lines.append(line)
     else:
         ai_line = "    (无 AI 助手运行)"
-        if idx == selected:
-            lines.append(f"{_SEL_BG}  {ai_line}\033[K{_BG_RESET}")
-        elif idx % 2 == 0:
-            lines.append(f"{_BG_EVEN}  {ai_line}\033[K{_BG_RESET}")
+
+        if is_selected:
+            line = f"{_SEL_BG}  {ai_line}{_RESET}{_BG_RESET}"
+        elif is_even:
+            line = f"{_BG_EVEN}  {ai_line}{_RESET}"
         else:
-            lines.append(f"  {ai_line}\033[K")
+            line = f"  {ai_line}{_RESET}"
+
+        lines.append(line)
 
     return lines
 
