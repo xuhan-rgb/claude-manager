@@ -21,6 +21,12 @@ _codex_monitor_script() {
     echo "$HOME/.config/kitty/scripts/codex-event-monitor.py"
 }
 
+_codex_monitor_pidfile() {
+    local socket_hash
+    socket_hash=$(printf '%s' "$(_kitty_socket)" | md5sum | cut -c1-8)
+    printf '/tmp/kitty-codex-monitor-%s-%s.pid\n' "$socket_hash" "$KITTY_WINDOW_ID"
+}
+
 _codex_target_cwd() {
     local target="$PWD"
     local expect_value=""
@@ -63,7 +69,8 @@ _start_codex_notify_monitor() {
     monitor="$(_codex_monitor_script)"
     [ -f "$monitor" ] || return 0
 
-    local pidfile="/tmp/kitty-codex-monitor-${KITTY_WINDOW_ID}.pid"
+    local pidfile
+    pidfile="$(_codex_monitor_pidfile)"
     if [ -f "$pidfile" ]; then
         local old_pid=""
         read -r old_pid < "$pidfile"
@@ -410,9 +417,9 @@ Kitty Tab 管理命令 (kitty-enhance)
     tab-delete <name>     删除 session
 
   工作进度监控:
-    work-status, ws       查看所有 Kitty 窗口的工作进度
-    work-status -i        交互式选择（方向键/jk，Enter 跳转）
-    work-status --active-only  仅显示有 AI 助手的 tab
+    work-status, ws                    打开工作状态 GUI（按工程查看任务）
+    agent-terminals work-status -i     终端交互式选择（方向键/jk，Enter 跳转）
+    agent-terminals work-status --json JSON 输出
 
   窗口:
     win-lock              锁定窗口（禁用关闭按钮）

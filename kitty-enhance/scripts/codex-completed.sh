@@ -30,7 +30,7 @@ if [ "$_TAB_COLOR" = true ]; then
                 read -r _cur < "$local_sf"
                 case "$_cur" in
                     blue|blue-paused)
-                        rm -f "$local_sf"
+                        clear_tab_color_state "$KITTY_SOCKET" "$TAB_ID"
                         rm -f "/tmp/kitty-tabcache-${WINDOW_ID}"
                     ;;
                 esac
@@ -98,6 +98,7 @@ registry[terminal_id] = {
     'registered_at': old.get('registered_at', time.time()),
     'last_activity': time.time(),
     'status': 'completed',
+    'task_summary': old.get('task_summary', ''),
     'agent_kind': 'codex',
     'agent_name': 'Codex',
 }

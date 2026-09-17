@@ -97,7 +97,7 @@ verify_bridge_installation() {
     fi
 
     # 检查核心 hooks
-    for h in on-stop.sh on-notify.sh on-tool-use.sh on-permission-pending.sh feishu-register.sh; do
+    for h in on-stop.sh on-notify.sh on-tool-use.sh on-user-prompt.sh on-permission-pending.sh feishu-register.sh; do
         if [ -f "$HOME/.claude/hooks/$h" ]; then
             success "  Hook: $h"
         else
@@ -341,10 +341,12 @@ HOOK_MAP_FULL = {
     "Stop": "on-stop.sh",
     "Notification": "on-notify.sh",
     "PreToolUse": "on-tool-use.sh",
+    "UserPromptSubmit": "on-user-prompt.sh",
 }
 HOOK_MAP_BRIDGE = {
     "Stop": "on-stop.sh",
     "PreToolUse": "on-tool-use.sh",
+    "UserPromptSubmit": "on-user-prompt.sh",
 }
 HOOK_MAP = HOOK_MAP_FULL if mode == "full" else HOOK_MAP_BRIDGE
 
@@ -442,7 +444,7 @@ verify_installation() {
 
     # 检查 hooks
     local hook_ok=true
-    for h in on-stop.sh on-notify.sh on-tool-use.sh tab-color-common.sh; do
+    for h in on-stop.sh on-notify.sh on-tool-use.sh on-user-prompt.sh tab-color-common.sh; do
         if [ ! -f "$HOME/.claude/hooks/$h" ]; then
             error "Claude Hook $h 未找到"
             hook_ok=false

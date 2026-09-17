@@ -5,6 +5,7 @@
 ## 功能特性
 
 - **终端发现**: 自动发现所有运行中的 Claude/Codex 终端，交互式跳转
+- **工作状态看板**: `work-status` GUI 按工程分组，显示当前任务摘要，支持跳转/关 Tab
 - **任务管理**: 创建、追踪、管理开发任务
 - **多终端支持**: 同时管理多个终端窗口（Claude、Codex、Shell、ROS2 等）
 - **状态检测**: 自动检测 AI 任务状态（运行中/已完成/等待确认）
@@ -20,6 +21,8 @@
 - Codex 工作中：Tab 变蓝（独立链路，不改 Claude hook）
 - Codex 当前轮次完成：Tab 变红
 - 查看结果后：自动恢复原色（3 秒）
+- Tab 标题跟随最近聚焦的 Claude/Codex 窗口（工作中保留 spinner）
+- `work-status` 看板显示每个窗口正在处理的任务
 
 ---
 
@@ -74,16 +77,19 @@ ta / tab-alert     # 标记为红色
 **特点**：
 - ✅ 独立命令入口，不依赖 `claude-manager` 任务 TUI
 - ✅ 自动发现所有 Claude/Codex 终端
+- ✅ `work-status` 看板按工程查看当前任务，单击跳转
 - ✅ 支持多 kitty 实例，终端 ID 使用 `terminal_id` 避免同号窗口互相覆盖
 - ✅ 兼容旧命令：`claude-manager tabs ...`
 
 **使用方式**：
 ```bash
+work-status                       # 工作状态 GUI（别名 ws）
 agent-terminals                   # 交互式选择（↑↓ 选择，Enter 跳转，q 退出）
 agent-terminals list              # 列表模式
 agent-terminals list --active     # 只看 working/waiting
 agent-terminals list --json       # JSON 输出
 agent-terminals focus <terminal_id>  # 按 terminal_id 直接跳转
+agent-terminals work-status -i    # 终端内交互式工作进度
 ```
 
 ---
@@ -143,17 +149,19 @@ claude-manager --debug           # 启用调试面板
 |------|------|------|
 | Python | 3.10+ | 运行环境 |
 | Kitty | - | 终端模拟器 |
-| Tmux | 2.4+ | 会话管理 |
+| Tmux | 2.4+ | 会话管理（仅 TUI） |
 | textual | >= 0.40.0 | TUI 框架 |
+| PyQt5 | >= 5.15.0 | work-status 看板 |
 | psutil | >= 5.9.0 | 进程监控 |
 | pyyaml | >= 6.0 | 配置解析 |
+| wmctrl | - | 看板跳转时激活 Kitty 窗口 |
 | xclip | - | 剪贴板支持（可选） |
 
 安装依赖：
 
 ```bash
 # Ubuntu/Debian
-sudo apt install kitty tmux xclip
+sudo apt install kitty tmux wmctrl xclip
 
 # 安装 uv（如果没有）
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -285,6 +293,7 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 - 这条链路是**独立实现**，不会改动现有 Claude Hook
 - Codex 开始处理时 → 蓝色；Codex 当前轮次完成时 → 红色
 - 目前 Codex 复用了同一套 Tab 恢复逻辑；Claude 的黄色确认通知保持原样
+- Tab 标题会同步成最近聚焦的 AI 窗口标题；Claude 提交 prompt 时会登记任务摘要，供 `work-status` 显示
 
 **Tab 管理命令**
 
@@ -326,8 +335,8 @@ cd kitty-enhance && ./install.sh    # 配置 hooks 和 shell 函数
 
 安装内容：
 - ✅ 复制 Kitty 配置到 `~/.config/kitty/`
-- ✅ 复制优化脚本到 `~/.config/kitty/scripts/`
-- ✅ 配置 Claude Code Hooks 到 `~/.claude/hooks/`
+- ✅ 复制优化脚本到 `~/.config/kitty/scripts/`（含 Tab 标题监控、Codex 事件监控）
+- ✅ 配置 Claude Code Hooks 到 `~/.claude/hooks/`（含 `UserPromptSubmit`）
 - ✅ 添加 Shell 函数到 `.bashrc`/`.zshrc`
 
 **安装后使配置生效**：
@@ -599,6 +608,24 @@ tmux source-file ~/.tmux.conf
 
 ---
 
+## 工作状态看板
+
+扫描全部 Kitty 窗口里的 Claude/Codex，按 Git 工程分组，卡片上显示处理中/待确认/已完成、当前任务、工作目录。
+
+```bash
+work-status                            # 打开 GUI（默认后台、单实例）
+ws                                     # 同上
+agent-terminals work-status -i         # 终端交互式列表
+agent-terminals work-status --json     # JSON
+```
+
+- 单击卡片：激活对应 Kitty 窗口并聚焦 Tab
+- 卡片 ×：关闭该 Tab
+- 右键：忽略/取消忽略某个 Kitty 窗口
+- 任务文案优先来自当前窗口刚提交的 prompt；没有则读本地 Claude/Codex session
+
+安装：`cd manager && ./install.sh`（会链接 `work-status` 到 `~/.local/bin/`）
+
 ## 终端发现与跳转
 
 自动发现所有 kitty 终端中运行的 Claude/Codex 实例，支持交互式选择跳转。
@@ -626,6 +653,19 @@ ID                  TAB                                          PROJECT        
 - 仅支持 **kitty 终端直接启动** 的 Claude/Codex
 - **tmux 内的 Claude 暂时无法被发现**（环境变量传递、ID 冲突等问题，详见 CLAUDE.md）
 - gnome-terminal、VS Code 终端、SSH 远程终端暂不支持
+
+---
+
+## 按会话选择 skill / MCP
+
+`tools/ai-run` 只影响这一次启动的 Claude/Codex，不改全局配置。
+
+```bash
+python3 tools/ai-run inventory
+python3 tools/ai-run claude --skills agent-reach,tdd --mcp none
+python3 tools/ai-run claude --skills none --mcp none --yolo
+python3 tools/ai-run codex --skills brainstorming --mcp openaiDeveloperDocs -- --model gpt-5.6-sol
+```
 
 ---
 
@@ -800,7 +840,7 @@ tail -f /tmp/claude-hook.log
 
 ```
 .
-├── manager/                    # TUI 任务管理器
+├── manager/                    # TUI 任务管理器 + 工作状态看板
 │   ├── src/claude_manager/
 │   │   ├── app.py             # TUI 主逻辑
 │   │   ├── cli.py             # 命令行入口
@@ -808,10 +848,14 @@ tail -f /tmp/claude-hook.log
 │   │   ├── tmux_control.py    # Tmux 管理
 │   │   ├── data_store.py      # 数据持久化
 │   │   ├── models.py          # 数据模型
+│   │   ├── tabs/              # 终端发现、跳转、work-status
 │   │   └── terminal/          # 终端适配器
 │   ├── tests/
 │   ├── pyproject.toml
 │   └── watch_logs.sh
+│
+├── tools/
+│   └── ai-run                 # 按会话选择 skill / MCP
 │
 ├── kitty-enhance/              # Kitty 优化工具集 ⭐
 │   ├── config/
@@ -825,11 +869,13 @@ tail -f /tmp/claude-hook.log
 │   ├── scripts/                # Kitty 辅助脚本
 │   │   ├── rename-tab.sh
 │   │   ├── quick-rename-tab.sh
+│   │   ├── ai-tab-title-monitor.py # Tab 标题跟随 AI 窗口
 │   │   ├── codex-event-monitor.py  # Codex 会话事件监控
 │   │   ├── codex-working.sh        # Codex 工作中 Tab 变蓝
 │   │   └── codex-completed.sh      # Codex 完成 Tab 变红
 │   ├── hooks/                  # Claude Code Hooks
 │   │   ├── on-tool-use.sh      # 工具调用时 Tab 变蓝
+│   │   ├── on-user-prompt.sh   # 提交 prompt 时登记任务摘要
 │   │   ├── on-stop.sh          # 完成时 Tab 变红 + 通知
 │   │   ├── on-notify.sh        # 通知处理
 │   │   ├── on-permission-pending.sh # 权限弹窗记录（飞书桥接）

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -18,7 +19,9 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
-def _install_fake_environment(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]:
+def _install_fake_environment(
+    tmp_path: Path,
+) -> tuple[Path, dict[str, str], Path, Path, Path]:
     home = tmp_path / "home"
     bin_dir = tmp_path / "bin"
     real_dir = tmp_path / "real"
@@ -34,6 +37,7 @@ def _install_fake_environment(tmp_path: Path) -> tuple[Path, dict[str, str], Pat
 
     real_out = tmp_path / "real.json"
     monitor_out = tmp_path / "monitor.json"
+    title_monitor_out = tmp_path / "title-monitor.json"
 
     _write_executable(
         real_dir / "codex",
@@ -71,6 +75,21 @@ time.sleep(0.1)
 """,
     )
 
+    _write_executable(
+        scripts_dir / "ai-tab-title-monitor.py",
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+Path(os.environ["TMP_TITLE_MONITOR_OUT"]).write_text(
+    json.dumps({"argv": sys.argv[1:]}),
+    encoding="utf-8",
+)
+""",
+    )
+
     env = os.environ.copy()
     env.pop("KITTY_WINDOW_ID", None)
     env.pop("KITTY_LISTEN_ON", None)
@@ -80,14 +99,15 @@ time.sleep(0.1)
             "PATH": f"{bin_dir}:{real_dir}:{env['PATH']}",
             "TMP_REAL_OUT": str(real_out),
             "TMP_MONITOR_OUT": str(monitor_out),
+            "TMP_TITLE_MONITOR_OUT": str(title_monitor_out),
             "PWD": str(tmp_path / "workspace"),
         }
     )
-    return wrapper, env, real_out, monitor_out
+    return wrapper, env, real_out, monitor_out, title_monitor_out
 
 
 def test_wrapper_executes_real_codex_and_starts_monitor(tmp_path):
-    wrapper, env, real_out, monitor_out = _install_fake_environment(tmp_path)
+    wrapper, env, real_out, monitor_out, _ = _install_fake_environment(tmp_path)
     env["KITTY_WINDOW_ID"] = "42"
     env["KITTY_LISTEN_ON"] = "unix:@sock"
 
@@ -110,10 +130,41 @@ def test_wrapper_executes_real_codex_and_starts_monitor(tmp_path):
 
 
 def test_wrapper_skips_monitor_outside_kitty(tmp_path):
-    wrapper, env, real_out, monitor_out = _install_fake_environment(tmp_path)
+    wrapper, env, real_out, monitor_out, _ = _install_fake_environment(tmp_path)
 
     subprocess.run([str(wrapper), "--version"], check=True, env=env)
     time.sleep(0.2)
 
     assert json.loads(real_out.read_text(encoding="utf-8"))["argv"] == ["--version"]
     assert not monitor_out.exists()
+
+
+def test_wrapper_starts_ai_tab_title_monitor(tmp_path):
+    wrapper, env, _, _, title_monitor_out = _install_fake_environment(tmp_path)
+    env["KITTY_WINDOW_ID"] = "42"
+    env["KITTY_LISTEN_ON"] = "unix:@sock"
+
+    subprocess.run([str(wrapper), "--cd", "~/demo", "--version"], check=True, env=env)
+    time.sleep(0.2)
+
+    assert json.loads(title_monitor_out.read_text(encoding="utf-8"))["argv"] == [
+        "--kitty-socket",
+        "unix:@sock",
+    ]
+
+
+def test_monitor_pidfile_is_scoped_by_kitty_socket(tmp_path):
+    wrapper, env, _, _, _ = _install_fake_environment(tmp_path)
+    env["KITTY_WINDOW_ID"] = "987654"
+    env["KITTY_LISTEN_ON"] = "unix:@sock"
+    socket_hash = hashlib.md5(b"unix:@sock").hexdigest()[:8]
+    pidfile = Path(f"/tmp/kitty-codex-monitor-{socket_hash}-987654.pid")
+    legacy_pidfile = Path("/tmp/kitty-codex-monitor-987654.pid")
+
+    try:
+        subprocess.run([str(wrapper), "--version"], check=True, env=env)
+
+        assert pidfile.exists()
+    finally:
+        pidfile.unlink(missing_ok=True)
+        legacy_pidfile.unlink(missing_ok=True)

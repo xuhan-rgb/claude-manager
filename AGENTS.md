@@ -4,7 +4,7 @@
 - `src/claude_manager/`: core package. Key modules include `app.py` (Textual TUI), `cli.py` (entry point), `launcher.py` (split layout startup), `kitty_control.py` and `tmux_control.py` (integrations), and `data_store.py` (JSON persistence).
 - `tests/`: pytest suite (currently `test_models.py`).
 - `config/layouts/`: user layout presets (loaded at runtime).
-- Root docs: `README.md`, `CLAUDE.md`, `COMMANDS.md` for usage, architecture, and debugging.
+- Root docs: `README.md`, `CLAUDE.md` for usage, architecture, and debugging.
 
 ## Build, Test, and Development Commands
 - `pip install -e .`: install the package in editable mode.

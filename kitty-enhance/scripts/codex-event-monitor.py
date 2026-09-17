@@ -21,6 +21,7 @@ from pathlib import Path
 SESSION_IDLE_GRACE_SECONDS = 8.0
 SESSION_DISCOVERY_TIMEOUT_SECONDS = 15.0
 POLL_INTERVAL_SECONDS = 0.5
+TITLE_COMPLETION_GRACE_SECONDS = 1.0
 SUPPORTED_ORIGINATORS = {"codex-tui", "codex_cli_rs", "codex_exec"}
 
 
@@ -67,6 +68,9 @@ class CodexEventMonitor:
         self.session_offset = 0
         self.session_last_activity = self.start_time
         self.processed_events: set[tuple[str, str, str]] = set()
+        self.title_working = False
+        self.title_idle_since: float | None = None
+        self.completion_notified = False
 
     def run(self) -> int:
         while True:
@@ -79,7 +83,8 @@ class CodexEventMonitor:
             else:
                 self._drain_session(initial=False)
 
-            codex_running = self._window_has_codex_process()
+            codex_running, window_title = self._window_codex_state()
+            self._sync_title_working_state(window_title if codex_running else "")
             idle_seconds = time.time() - self.session_last_activity
 
             if self.session_path is None and not codex_running:
@@ -117,16 +122,15 @@ class CodexEventMonitor:
             if session_cwd and os.path.realpath(os.path.expanduser(session_cwd)) != self.cwd:
                 continue
 
-            session_ts = parse_timestamp(meta.get("timestamp"))
-            if session_ts and session_ts < self.start_time - 5.0:
-                continue
-
             candidates.append(SessionCandidate(path=path, meta=meta, mtime=stat.st_mtime))
 
         if not candidates:
             return None
 
-        candidates.sort(key=lambda item: (parse_timestamp(item.meta.get("timestamp")), item.mtime), reverse=True)
+        candidates.sort(
+            key=lambda item: (item.mtime, parse_timestamp(item.meta.get("timestamp"))),
+            reverse=True,
+        )
         return candidates[0]
 
     def _read_session_meta(self, path: Path) -> dict | None:
@@ -180,11 +184,24 @@ class CodexEventMonitor:
 
         payload = event.get("payload") or {}
         event_type = payload.get("type")
-        if event_type not in {"task_started", "task_complete"}:
-            return
-
         event_ts = parse_timestamp(event.get("timestamp"))
         if event_ts and event_ts < self.start_time - 1.0:
+            return
+
+        if event_type == "user_message":
+            self.completion_notified = False
+            message = str(payload.get("message", ""))
+            summary = next(
+                (" ".join(line.strip().split()) for line in message.splitlines() if line.strip()),
+                "",
+            )
+            if summary:
+                self._run_script(
+                    self.working_script,
+                    {"CM_TASK_SUMMARY": summary[:72]},
+                )
+            return
+        if event_type not in {"task_started", "task_complete"}:
             return
 
         turn_id = str(payload.get("turn_id", ""))
@@ -194,12 +211,21 @@ class CodexEventMonitor:
         self.processed_events.add(event_key)
 
         if event_type == "task_started":
+            self.completion_notified = False
             self._run_script(self.working_script)
             return
 
         completed_message = payload.get("last_agent_message") or ""
-        extra_env = {"CM_COMPLETED_MESSAGE": completed_message}
-        self._run_script(self.completed_script, extra_env=extra_env)
+        self._notify_completed(completed_message)
+
+    def _notify_completed(self, message: str = "") -> None:
+        if self.completion_notified:
+            return
+        self.completion_notified = True
+        self._run_script(
+            self.completed_script,
+            extra_env={"CM_COMPLETED_MESSAGE": message},
+        )
 
     def _run_script(self, script: Path, extra_env: dict[str, str] | None = None) -> None:
         if not script.exists():
@@ -217,7 +243,22 @@ class CodexEventMonitor:
         except Exception:
             return
 
-    def _window_has_codex_process(self) -> bool:
+    def _sync_title_working_state(self, title: str) -> None:
+        stripped = title.lstrip()
+        title_working = bool(stripped) and "\u2800" <= stripped[0] <= "\u28ff"
+        if title_working and not self.title_working:
+            self.completion_notified = False
+            self.title_idle_since = None
+            self._run_script(self.working_script)
+        elif not title_working and self.title_working:
+            self.title_idle_since = time.time()
+        elif not title_working and self.title_idle_since is not None:
+            if time.time() - self.title_idle_since >= TITLE_COMPLETION_GRACE_SECONDS:
+                self._notify_completed()
+                self.title_idle_since = None
+        self.title_working = title_working
+
+    def _window_codex_state(self) -> tuple[bool, str]:
         try:
             result = subprocess.run(
                 ["kitty", "@", "--to", self.kitty_socket, "ls"],
@@ -226,28 +267,33 @@ class CodexEventMonitor:
                 timeout=5,
             )
         except Exception:
-            return False
+            return False, ""
 
         if result.returncode != 0 or not result.stdout:
-            return False
+            return False, ""
 
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return False
+            return False, ""
 
         for os_window in data:
             for tab in os_window.get("tabs", []):
                 for window in tab.get("windows", []):
                     if str(window.get("id", "")) != self.window_id:
                         continue
+                    codex_running = False
                     for process in window.get("foreground_processes", []):
                         cmdline = process.get("cmdline") or []
                         for token in cmdline:
                             basename = os.path.basename(str(token)).lower()
                             if basename == "codex" or basename.startswith("codex-"):
-                                return True
-        return False
+                                codex_running = True
+                    return codex_running, str(window.get("title") or "")
+        return False, ""
+
+    def _window_has_codex_process(self) -> bool:
+        return self._window_codex_state()[0]
 
 
 def main() -> int:

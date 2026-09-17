@@ -30,7 +30,7 @@ if [ "$WIN_FOCUSED" = "1" ]; then
         read -r _cur < "$local_sf"
         case "$_cur" in blue|blue-paused)
             debug "window focused, clearing blue state"
-            rm -f "$local_sf"
+            clear_tab_color_state "$KITTY_SOCKET" "$TAB_ID"
             rm -f "/tmp/kitty-tabcache-${WINDOW_ID}"
         ;; esac
     fi

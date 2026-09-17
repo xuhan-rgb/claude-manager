@@ -38,11 +38,55 @@ def _write(s: str) -> None:
     sys.stdout.flush()
 
 
+def _clear_screen() -> None:
+    """清屏"""
+    _write("\033[2J\033[H")
+    # 再刷新一次确保清屏完成
+    sys.stdout.flush()
+
+
 def _truncate(text: str, max_len: int) -> str:
     """截断文本到指定长度"""
     if len(text) <= max_len:
         return text
     return text[:max_len-3] + "..."
+
+
+def _visual_len(text: str) -> int:
+    """计算文本的视觉宽度（CJK 字符算 2 宽度）"""
+    width = 0
+    for ch in text:
+        code = ord(ch)
+        # CJK 字符
+        if (0x4E00 <= code <= 0x9FFF or  # CJK Unified
+            0x3000 <= code <= 0x303F or  # CJK Symbols
+            0xFF00 <= code <= 0xFFEF):   # Fullwidth
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _truncate_visual(text: str, max_width: int) -> str:
+    """按视觉宽度截断文本"""
+    result = []
+    current_width = 0
+
+    for ch in text:
+        code = ord(ch)
+        ch_width = 2 if (0x4E00 <= code <= 0x9FFF or
+                        0x3000 <= code <= 0x303F or
+                        0xFF00 <= code <= 0xFFEF) else 1
+
+        if current_width + ch_width > max_width:
+            if current_width < max_width - 3:
+                result.append("...")
+            break
+
+        result.append(ch)
+        current_width += ch_width
+
+    return ''.join(result)
 
 
 def _render_item(
@@ -53,54 +97,46 @@ def _render_item(
     term_width: int,
 ) -> list[str]:
     """渲染一个 tab 项（可能包含多个 AI 进程）"""
-    _SEL_BG = "\033[48;5;24m"
-    _BG_EVEN = "\033[48;5;236m"
-    _BG_RESET = "\033[0m"
-    _BOLD = "\033[1m"
+    _SEL_BG = "\033[48;5;24m"  # 蓝色背景
     _RESET = "\033[0m"
+    _BOLD = "\033[1m"
 
     lines = []
     is_selected = (idx == selected)
-    is_even = (idx % 2 == 0)
 
-    # Tab 标题行
+    # Tab 标题行 - 截断以避免换行
     focus_mark = " [聚焦]" if tab.is_focused else ""
     title = f"Tab {tab.tab_id}: {tab.title}{focus_mark}"
+    # 预留前缀的空间（"> " 或 "  "）
+    max_title_width = term_width - 4
+    title = _truncate_visual(title, max_title_width)
 
-    # 不要截断，让终端自动换行
     if is_selected:
-        line = f"{_SEL_BG}{_BOLD}> {title}{_RESET}{_BG_RESET}"
-    elif is_even:
-        line = f"{_BG_EVEN}  {title}{_RESET}"
+        lines.append(f"{_SEL_BG}{_BOLD}> {title}{_RESET}")
     else:
-        line = f"  {title}{_RESET}"
+        lines.append(f"  {title}")
 
-    lines.append(line)
-
-    # AI 进程列表（缩进显示）
+    # AI 进程列表 - 截断以避免换行
     if tab.ai_processes:
         for proc in tab.ai_processes:
             ai_line = f"    ● {proc.display_name} → {proc.short_cwd}"
+            # 预留前缀和缩进的空间
+            max_ai_width = term_width - 6
+            ai_line = _truncate_visual(ai_line, max_ai_width)
 
             if is_selected:
-                line = f"{_SEL_BG}  {ai_line}{_RESET}{_BG_RESET}"
-            elif is_even:
-                line = f"{_BG_EVEN}  {ai_line}{_RESET}"
+                lines.append(f"{_SEL_BG}  {ai_line}{_RESET}")
             else:
-                line = f"  {ai_line}{_RESET}"
-
-            lines.append(line)
+                lines.append(f"  {ai_line}")
     else:
         ai_line = "    (无 AI 助手运行)"
+        max_ai_width = term_width - 6
+        ai_line = _truncate_visual(ai_line, max_ai_width)
 
         if is_selected:
-            line = f"{_SEL_BG}  {ai_line}{_RESET}{_BG_RESET}"
-        elif is_even:
-            line = f"{_BG_EVEN}  {ai_line}{_RESET}"
+            lines.append(f"{_SEL_BG}  {ai_line}{_RESET}")
         else:
-            line = f"  {ai_line}{_RESET}"
-
-        lines.append(line)
+            lines.append(f"  {ai_line}")
 
     return lines
 
@@ -112,10 +148,17 @@ def _render_screen(
 ) -> None:
     """渲染整个屏幕"""
     # 清屏并移动到左上角
-    _write("\033[2J\033[H")
+    _clear_screen()
+
+    # 给一点时间让清屏完成
+    import time
+    time.sleep(0.01)
 
     # 获取终端宽度
-    term_width = os.get_terminal_size().columns
+    try:
+        term_width = os.get_terminal_size().columns
+    except OSError:
+        term_width = 120
 
     # 标题
     _write("\033[1m所有 Kitty 窗口的工作进度\033[0m\n\n")
@@ -132,7 +175,8 @@ def _render_screen(
 
         # 渲染 tab 和 AI 进程
         for line in _render_item(os_win, tab, idx, selected, term_width):
-            _write(line + "\n")
+            _write(line)
+            _write("\n")
         _write("\n")
 
     # 底部提示
@@ -141,6 +185,9 @@ def _render_screen(
     _write("\n" + "━" * min(60, term_width) + "\n")
     _write(f"总计: {len(windows)} 个窗口, {total_tabs} 个 tab, {total_ai} 个活跃 AI 助手\n\n")
     _write("\033[90m↑↓/jk: 选择  Enter: 跳转  q/Esc: 退出\033[0m\n")
+
+    # 最后再刷新一次
+    sys.stdout.flush()
 
 
 def _jump_to_tab(os_win: OSWindowStatus, tab: TabStatus) -> bool:

@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""Launch Claude or Codex with a session-scoped MCP and skill selection."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from collections import defaultdict
+from pathlib import Path
+from typing import Iterable
+
+
+SPECIAL_SELECTIONS = {"default", "none", "all"}
+
+
+def parse_selection(value: str) -> tuple[str, set[str]]:
+    value = value.strip()
+    if value in SPECIAL_SELECTIONS:
+        return value, set()
+    names = {item.strip() for item in value.split(",") if item.strip()}
+    if not names:
+        raise ValueError("selection must be default, none, all, or a comma-separated list")
+    return "selected", names
+
+
+def skill_name(path: Path) -> str:
+    try:
+        header = path.read_text(encoding="utf-8", errors="replace")[:8192]
+    except OSError:
+        return path.parent.name
+    match = re.search(r"^name:\s*['\"]?([^'\"\n]+)", header, re.MULTILINE)
+    return match.group(1).strip() if match else path.parent.name
+
+
+def is_model_invocable(path: Path) -> bool:
+    try:
+        header = path.read_text(encoding="utf-8", errors="replace")[:8192]
+    except OSError:
+        return True
+    return not bool(
+        re.search(r"^disable-model-invocation:\s*true\s*$", header, re.MULTILINE)
+    )
+
+
+def claude_config_dir() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
+def discover_claude_skills(cwd: Path) -> dict[str, Path]:
+    roots = [claude_config_dir() / "skills", cwd / ".claude" / "skills"]
+    discovered: dict[str, Path] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*/SKILL.md")):
+            discovered[skill_name(path)] = path
+    return discovered
+
+
+def load_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def merge_mcp_servers(target: dict[str, dict], data: dict, direct: bool = False) -> None:
+    servers = data if direct else data.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return
+    for name, definition in servers.items():
+        if isinstance(definition, dict):
+            target[name] = definition
+
+
+def discover_claude_mcp(cwd: Path) -> dict[str, dict]:
+    config = claude_config_dir()
+    servers: dict[str, dict] = {}
+    merge_mcp_servers(servers, load_json(config / "settings.json"))
+    user_mcp = load_json(config / "mcp.json")
+    merge_mcp_servers(servers, user_mcp, direct="mcpServers" not in user_mcp)
+
+    legacy = load_json(Path.home() / ".claude.json")
+    merge_mcp_servers(servers, legacy)
+    projects = legacy.get("projects", {})
+    if isinstance(projects, dict) and isinstance(projects.get(str(cwd)), dict):
+        merge_mcp_servers(servers, projects[str(cwd)])
+
+    project_mcp = load_json(cwd / ".mcp.json")
+    merge_mcp_servers(servers, project_mcp, direct="mcpServers" not in project_mcp)
+    return servers
+
+
+def decode_toml_string(value: str) -> str:
+    value = value.strip()
+    if value.startswith('"'):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return value.strip("'\"")
+
+
+def parse_codex_config(path: Path) -> tuple[list[Path], list[str]]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return [], []
+
+    skill_paths: list[Path] = []
+    mcp_names: list[str] = []
+    in_skill = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "[[skills.config]]":
+            in_skill = True
+            continue
+        if stripped.startswith("["):
+            in_skill = False
+            match = re.match(r'^\[mcp_servers\.(?:"([^"]+)"|([^\]]+))\]$', stripped)
+            if match:
+                mcp_names.append((match.group(1) or match.group(2)).strip())
+            continue
+        if in_skill:
+            match = re.match(r"^path\s*=\s*(.+)$", stripped)
+            if match:
+                skill_paths.append(Path(decode_toml_string(match.group(1))).expanduser())
+
+    unique_paths = list(dict.fromkeys(skill_paths))
+    unique_mcp = list(dict.fromkeys(mcp_names))
+    return unique_paths, unique_mcp
+
+
+def codex_config_path() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    return codex_home.expanduser() / "config.toml"
+
+
+def discover_codex_skills() -> tuple[list[Path], dict[str, list[Path]]]:
+    paths, _ = parse_codex_config(codex_config_path())
+    grouped: dict[str, list[Path]] = defaultdict(list)
+    for path in paths:
+        grouped[skill_name(path)].append(path)
+    return paths, dict(grouped)
+
+
+def choose_skill_path(paths: Iterable[Path]) -> Path:
+    def rank(path: Path) -> tuple[int, str]:
+        text = str(path)
+        if "/.agents/skills/" in text:
+            return 0, text
+        if "/.codex/skills/" in text:
+            return 1, text
+        return 2, text
+
+    return sorted(paths, key=rank)[0]
+
+
+def validate_names(kind: str, selected: set[str], available: Iterable[str]) -> None:
+    available_set = set(available)
+    unknown = sorted(selected - available_set)
+    if unknown:
+        known = ", ".join(sorted(available_set)) or "(none)"
+        raise ValueError(f"unknown {kind}: {', '.join(unknown)}\nKnown {kind}: {known}")
+
+
+def resolve_skill_names(
+    selected: set[str], grouped: dict[str, list[Path]]
+) -> set[str]:
+    aliases: dict[str, str] = {}
+    for declared_name, paths in grouped.items():
+        aliases[declared_name] = declared_name
+        for path in paths:
+            aliases[path.parent.name] = declared_name
+    unresolved = sorted(name for name in selected if name not in aliases)
+    if unresolved:
+        known = ", ".join(sorted(aliases)) or "(none)"
+        raise ValueError(f"unknown skills: {', '.join(unresolved)}\nKnown skills: {known}")
+    return {aliases[name] for name in selected}
+
+
+def write_mcp_file(servers: dict[str, dict]) -> Path:
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix="ai-run-mcp-", suffix=".json", delete=False
+    )
+    try:
+        os.chmod(handle.name, 0o600)
+        json.dump({"mcpServers": servers}, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    finally:
+        handle.close()
+    return Path(handle.name)
+
+
+def selected_mapping(
+    mode: str, selected: set[str], available: Iterable[str]
+) -> dict[str, bool]:
+    names = set(available)
+    if mode == "all":
+        return {name: True for name in names}
+    if mode == "none":
+        return {name: False for name in names}
+    validate_names("skills", selected, names)
+    return {name: name in selected for name in names}
+
+
+def build_claude_command(args: argparse.Namespace, cwd: Path):
+    command = [os.environ.get("AI_RUN_CLAUDE_BIN", "claude")]
+    env = os.environ.copy()
+    temporary_paths: list[Path] = []
+    summary: list[str] = []
+
+    skill_mode, selected_skills = parse_selection(args.skills)
+    skills = discover_claude_skills(cwd)
+    if skill_mode == "none":
+        command.append("--disable-slash-commands")
+        summary.append("skills: none")
+    elif skill_mode != "default":
+        if skill_mode == "selected":
+            selected_skills = resolve_skill_names(
+                selected_skills, {name: [path] for name, path in skills.items()}
+            )
+        mapping = selected_mapping(skill_mode, selected_skills, skills)
+        overrides = {name: "on" if enabled else "off" for name, enabled in mapping.items()}
+        command.extend(["--settings", json.dumps({"skillOverrides": overrides})])
+        visible = sorted(name for name, enabled in mapping.items() if enabled)
+        summary.append("custom skills: " + (", ".join(visible) or "none"))
+    else:
+        summary.append("skills: default")
+
+    if args.bundled_skills == "hide":
+        env["CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"] = "1"
+        summary.append("bundled skills: hidden")
+    else:
+        summary.append("bundled skills: default")
+
+    mcp_mode, selected_mcp = parse_selection(args.mcp)
+    mcp_servers = discover_claude_mcp(cwd)
+    if mcp_mode != "default":
+        if mcp_mode == "all":
+            visible_mcp = mcp_servers
+        elif mcp_mode == "none":
+            visible_mcp = {}
+        else:
+            validate_names("MCP servers", selected_mcp, mcp_servers)
+            visible_mcp = {name: mcp_servers[name] for name in sorted(selected_mcp)}
+        mcp_path = write_mcp_file(visible_mcp)
+        temporary_paths.append(mcp_path)
+        # The option is variadic, so the equals form prevents it from consuming the prompt.
+        command.extend(["--strict-mcp-config", f"--mcp-config={mcp_path}"])
+        summary.append("MCP: " + (", ".join(visible_mcp) or "none"))
+    else:
+        summary.append("MCP: default")
+
+    if args.yolo:
+        command.append("--dangerously-skip-permissions")
+        summary.append("permissions: yolo")
+    else:
+        summary.append("permissions: default")
+
+    command.extend(args.extra)
+    return command, env, temporary_paths, summary
+
+
+def toml_quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def codex_config_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return value
+    return toml_quote(value)
+
+
+def build_codex_skill_override(
+    paths: list[Path], grouped: dict[str, list[Path]], mapping: dict[str, bool]
+) -> str:
+    enabled_paths = {
+        choose_skill_path(grouped[name]) for name, enabled in mapping.items() if enabled
+    }
+    # Codex resolves duplicate skill names in config order. Put the selected
+    # canonical copies last so disabled legacy copies cannot shadow them.
+    ordered_paths = [path for path in paths if path not in enabled_paths]
+    ordered_paths.extend(path for path in paths if path in enabled_paths)
+    entries = [
+        "{path=" + toml_quote(str(path)) + ",enabled=" + str(path in enabled_paths).lower() + "}"
+        for path in ordered_paths
+    ]
+    return "skills.config=[" + ",".join(entries) + "]"
+
+
+def build_codex_command(args: argparse.Namespace, cwd: Path):
+    del cwd
+    command = [os.environ.get("AI_RUN_CODEX_BIN", "codex")]
+    env = os.environ.copy()
+    summary: list[str] = []
+    temporary_paths: list[Path] = []
+
+    skill_mode, selected_skills = parse_selection(args.skills)
+    paths, grouped = discover_codex_skills()
+    if skill_mode != "default":
+        if skill_mode == "selected":
+            selected_skills = resolve_skill_names(selected_skills, grouped)
+        mapping = selected_mapping(skill_mode, selected_skills, grouped)
+        command.extend(["-c", build_codex_skill_override(paths, grouped, mapping)])
+        visible = sorted(name for name, enabled in mapping.items() if enabled)
+        manual_only = [
+            name
+            for name in visible
+            if not is_model_invocable(choose_skill_path(grouped[name]))
+        ]
+        summary.append("skills: " + (", ".join(visible) or "none"))
+        if manual_only:
+            summary.append("manual-only: " + ", ".join(manual_only))
+    else:
+        summary.append("skills: default")
+
+    _, mcp_names = parse_codex_config(codex_config_path())
+    mcp_mode, selected_mcp = parse_selection(args.mcp)
+    if mcp_mode != "default":
+        if mcp_mode == "all":
+            enabled_mcp = set(mcp_names)
+        elif mcp_mode == "none":
+            enabled_mcp = set()
+        else:
+            validate_names("MCP servers", selected_mcp, mcp_names)
+            enabled_mcp = selected_mcp
+        for name in mcp_names:
+            enabled = str(name in enabled_mcp).lower()
+            command.extend(["-c", f"mcp_servers.{codex_config_key(name)}.enabled={enabled}"])
+        summary.append("MCP: " + (", ".join(sorted(enabled_mcp)) or "none"))
+    else:
+        summary.append("MCP: default")
+
+    if args.yolo:
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+        summary.append("permissions: yolo")
+    else:
+        summary.append("permissions: default")
+
+    command.extend(args.extra)
+    return command, env, temporary_paths, summary
+
+
+def display_command(command: list[str]) -> str:
+    rendered: list[str] = []
+    for item in command:
+        if item.startswith("skills.config=["):
+            count = item.count("{path=")
+            rendered.append(f"[generated skills.config: {count} path rules]")
+        elif item.startswith("{") and "skillOverrides" in item:
+            data = json.loads(item)
+            overrides = data.get("skillOverrides", {})
+            enabled = sum(1 for value in overrides.values() if value == "on")
+            rendered.append(f"[generated skillOverrides: {enabled}/{len(overrides)} on]")
+        else:
+            rendered.append(item)
+    return shlex.join(rendered)
+
+
+def inventory(cwd: Path) -> int:
+    claude_skills = discover_claude_skills(cwd)
+    claude_mcp = discover_claude_mcp(cwd)
+    _, codex_grouped = discover_codex_skills()
+    _, codex_mcp = parse_codex_config(codex_config_path())
+
+    def labels(grouped: dict[str, list[Path]]) -> str:
+        values = []
+        for name, paths in sorted(grouped.items()):
+            aliases = sorted({path.parent.name for path in paths} - {name})
+            values.append(f"{name} ({'/'.join(aliases)})" if aliases else name)
+        return ", ".join(values) or "none"
+
+    claude_grouped = {name: [path] for name, path in claude_skills.items()}
+    print(f"Claude custom skills ({len(claude_skills)}):")
+    print("  " + labels(claude_grouped))
+    print(f"Claude configured MCP ({len(claude_mcp)}):")
+    print("  " + (", ".join(sorted(claude_mcp)) or "none"))
+    print(f"Codex skill candidates ({len(codex_grouped)}):")
+    print("  " + labels(codex_grouped))
+    print(f"Codex configured MCP ({len(codex_mcp)}):")
+    print("  " + (", ".join(sorted(codex_mcp)) or "none"))
+    return 0
+
+
+def client_parser(subparsers, client: str):
+    parser = subparsers.add_parser(client, help=f"launch {client} with a scoped capability set")
+    parser.add_argument(
+        "--skills",
+        default="default",
+        metavar="SELECTION",
+        help="default, none, all, or comma-separated custom skill names",
+    )
+    parser.add_argument(
+        "--mcp",
+        default="default",
+        metavar="SELECTION",
+        help="default, none, all, or comma-separated configured MCP names",
+    )
+    parser.add_argument("--yolo", action="store_true", help="use the client's permission bypass flag")
+    parser.add_argument("--dry-run", action="store_true", help="show the resolved scope without launching")
+    if client == "claude":
+        parser.add_argument(
+            "--bundled-skills",
+            choices=("keep", "hide"),
+            default="keep",
+            help="keep or hide Claude bundled skills (default: keep)",
+        )
+    else:
+        parser.set_defaults(bundled_skills="keep")
+    parser.add_argument("extra", nargs=argparse.REMAINDER, help="client arguments after --")
+    return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ai-run",
+        description="Control the MCP servers and skills visible in one Claude or Codex session.",
+        epilog=(
+            "examples:\n"
+            "  ai-run inventory\n"
+            "  ai-run claude --skills agent-reach,tdd --mcp none\n"
+            "  ai-run claude --skills none --mcp none --yolo\n"
+            "  ai-run codex --skills brainstorming --mcp openaiDeveloperDocs -- --model gpt-5.6-sol"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="client", required=True)
+    subparsers.add_parser("inventory", help="list selectable skills and MCP servers")
+    client_parser(subparsers, "claude")
+    client_parser(subparsers, "codex")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    cwd = Path.cwd().resolve()
+    if args.client == "inventory":
+        return inventory(cwd)
+
+    if args.extra and args.extra[0] == "--":
+        args.extra = args.extra[1:]
+
+    temporary_paths: list[Path] = []
+    try:
+        if args.client == "claude":
+            command, env, temporary_paths, summary = build_claude_command(args, cwd)
+        else:
+            command, env, temporary_paths, summary = build_codex_command(args, cwd)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    print("Resolved session scope:", file=sys.stderr)
+    for line in summary:
+        print(f"  - {line}", file=sys.stderr)
+    print("Command:", display_command(command), file=sys.stderr)
+
+    if args.dry_run:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+        return 0
+
+    try:
+        return subprocess.run(command, env=env, check=False).returncode
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

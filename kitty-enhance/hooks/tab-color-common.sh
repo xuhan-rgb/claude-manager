@@ -101,9 +101,18 @@ for os_win in data:
 ' "$window_id" 2>/dev/null
 }
 
+# 恢复默认颜色后再删除状态，避免焦点切换竞态留下孤儿颜色。
+clear_tab_color_state() {
+    local socket="$1" tab_id="$2"
+    kitty @ --to "$socket" set-tab-color --match "id:$tab_id" \
+        active_bg=NONE active_fg=NONE \
+        inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
+    rm -f "$(_state_file "$socket" "$tab_id")"
+}
+
 # 设置 tab 颜色并写状态文件（红色优先于黄色）
 set_tab_color() {
-    local socket="$1" tab_id="$2" color_type="$3"
+    local socket="$1" tab_id="$2" color_type="$3" force="${4:-}"
     local sf
     sf=$(_state_file "$socket" "$tab_id")
 
@@ -111,11 +120,11 @@ set_tab_color() {
     local current=""
     [ -f "$sf" ] && current=$(cat "$sf")
 
-    if [ "$color_type" = "yellow" ] && [ "$current" = "red" ]; then
+    if [ "$force" != "force" ] && [ "$color_type" = "yellow" ] && [ "$current" = "red" ]; then
         debug "tab $tab_id already red, skip yellow"
         return 0
     fi
-    if [ "$color_type" = "blue" ] && { [ "$current" = "red" ] || [ "$current" = "yellow" ]; }; then
+    if [ "$force" != "force" ] && [ "$color_type" = "blue" ] && { [ "$current" = "red" ] || [ "$current" = "yellow" ]; }; then
         debug "tab $tab_id already $current, skip blue"
         return 0
     fi
@@ -190,7 +199,8 @@ ensure_poller() {
         # 超时清理所有状态文件
         debug "poller: timeout, cleaning all"
         for sf in "${STATE_DIR}"/kitty-tab-"${hash}"-*; do
-            [ -f "$sf" ] && rm -f "$sf"
+            [ -f "$sf" ] || continue
+            clear_tab_color_state "$sock" "${sf##*-}"
         done
         rm -f "$pid_f"
     ) </dev/null >/dev/null 2>&1 &

@@ -24,11 +24,12 @@ if [ "$_TAB_COLOR" = true ]; then
         TAB_ID="${TAB_INFO%% *}"
         WIN_FOCUSED="${TAB_INFO##* }"
         if [ "$WIN_FOCUSED" != "1" ]; then
-            set_tab_color "$KITTY_SOCKET" "$TAB_ID" "blue"
+            set_tab_color "$KITTY_SOCKET" "$TAB_ID" "blue" "force"
             ensure_poller "$KITTY_SOCKET"
         else
             # Codex 的 working 信号只在 turn 开始时触发一次。
             # 若触发时窗口仍聚焦，先记成 blue-paused，之后切走时由 poller 恢复成蓝色。
+            clear_tab_color_state "$KITTY_SOCKET" "$TAB_ID"
             echo "blue-paused" > "$(_state_file "$KITTY_SOCKET" "$TAB_ID")"
             ensure_poller "$KITTY_SOCKET"
         fi
@@ -66,6 +67,7 @@ registry[terminal_id] = {
     "registered_at": old.get("registered_at", time.time()),
     "last_activity": time.time(),
     "status": "working",
+    "task_summary": os.environ.get("CM_TASK_SUMMARY", "") or old.get("task_summary", ""),
     "agent_kind": "codex",
     "agent_name": "Codex",
 }

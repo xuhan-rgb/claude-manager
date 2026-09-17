@@ -74,6 +74,8 @@ create_symlink() {
     local dst="$BIN_DIR/claude-manager"
     local agent_src="$VENV_DIR/bin/agent-terminals"
     local agent_dst="$BIN_DIR/agent-terminals"
+    local work_status_src="$VENV_DIR/bin/work-status"
+    local work_status_dst="$BIN_DIR/work-status"
 
     if [ ! -f "$src" ]; then
         error "入口脚本不存在: $src"
@@ -94,6 +96,16 @@ create_symlink() {
         success "已链接 agent-terminals → $agent_dst"
     else
         warning "未找到独立终端管理入口: $agent_src"
+    fi
+
+    if [ -f "$work_status_src" ]; then
+        if [ -L "$work_status_dst" ] || [ -f "$work_status_dst" ]; then
+            rm -f "$work_status_dst"
+        fi
+        ln -sf "$work_status_src" "$work_status_dst"
+        success "已链接 work-status → $work_status_dst"
+    else
+        warning "未找到 Kitty 工作状态入口: $work_status_src"
     fi
 
     # 检查 PATH
@@ -139,6 +151,13 @@ verify_installation() {
         ((errors++))
     fi
 
+    if [ -x "$VENV_DIR/bin/work-status" ]; then
+        success "work-status GUI 入口正常"
+    else
+        error "work-status GUI 入口失败"
+        ((errors++))
+    fi
+
     if [ $errors -gt 0 ]; then
         error "验证失败 ($errors 个错误)"
         return 1
@@ -168,6 +187,13 @@ do_uninstall() {
         info "未找到 $BIN_DIR/agent-terminals"
     fi
 
+    if [ -L "$BIN_DIR/work-status" ]; then
+        rm "$BIN_DIR/work-status"
+        success "已删除 $BIN_DIR/work-status"
+    else
+        info "未找到 $BIN_DIR/work-status"
+    fi
+
     if [ -d "$VENV_DIR" ]; then
         rm -rf "$VENV_DIR"
         success "已删除虚拟环境: $VENV_DIR"
@@ -189,6 +215,7 @@ print_usage() {
     echo "  agent-terminals                     独立的 agent 终端管理器（默认交互选择）"
     echo "  agent-terminals list                列出所有 Claude/Codex 终端"
     echo "  agent-terminals focus <terminal_id> 跳转到指定终端"
+    echo "  work-status                        打开 Kitty 工作状态 GUI"
     echo ""
     echo "  claude-manager tabs list            兼容旧入口（等价于 agent-terminals list）"
     echo "  claude-manager tabs list --active   只看 working/waiting"

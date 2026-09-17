@@ -26,6 +26,16 @@ _codex_monitor_script() {
     echo "$HOME/.config/kitty/scripts/codex-event-monitor.py"
 }
 
+_ai_tab_title_monitor_script() {
+    echo "$HOME/.config/kitty/scripts/ai-tab-title-monitor.py"
+}
+
+_codex_monitor_pidfile() {
+    local socket_hash
+    socket_hash=$(printf '%s' "${KITTY_LISTEN_ON:-}" | md5sum | cut -c1-8)
+    printf '/tmp/kitty-codex-monitor-%s-%s.pid\n' "$socket_hash" "$KITTY_WINDOW_ID"
+}
+
 _codex_target_cwd() {
     local target="${PWD:-$HOME}"
     local expect_value=""
@@ -60,6 +70,17 @@ PY
     fi
 }
 
+_start_ai_tab_title_monitor() {
+    [ -n "${KITTY_LISTEN_ON:-}" ] || return 0
+
+    local monitor
+    monitor="$(_ai_tab_title_monitor_script)"
+    [ -f "$monitor" ] || return 0
+
+    python3 "$monitor" --kitty-socket "${KITTY_LISTEN_ON}" \
+        >/dev/null 2>&1 &
+}
+
 _start_codex_notify_monitor() {
     [ "${KITTY_ENHANCE_CODEX_NOTIFY:-1}" = "1" ] || return 0
     [ -n "${KITTY_WINDOW_ID:-}" ] || return 0
@@ -69,7 +90,8 @@ _start_codex_notify_monitor() {
     monitor="$(_codex_monitor_script)"
     [ -f "$monitor" ] || return 0
 
-    local pidfile="/tmp/kitty-codex-monitor-${KITTY_WINDOW_ID}.pid"
+    local pidfile
+    pidfile="$(_codex_monitor_pidfile)"
     if [ -f "$pidfile" ]; then
         local old_pid=""
         read -r old_pid < "$pidfile"
@@ -99,6 +121,7 @@ main() {
     }
 
     debug "exec real_codex=${real_codex} args=$*"
+    _start_ai_tab_title_monitor
     _start_codex_notify_monitor "$@"
     exec "$real_codex" "$@"
 }

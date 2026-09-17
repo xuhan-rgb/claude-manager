@@ -6,10 +6,31 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from .registry import load_registry
+from .registry import build_terminal_id, load_registry
+from .task_summary import task_summary_for
+
+
+@lru_cache(maxsize=256)
+def project_name_for_cwd(cwd: str) -> str:
+    """Return the Git project name while keeping the original cwd separate."""
+    if not cwd:
+        return "未知工程"
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return Path(result.stdout.strip()).name or result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path(cwd).expanduser().name or str(Path(cwd).expanduser())
 
 
 @dataclass
@@ -19,6 +40,8 @@ class AIProcess:
     cwd: str
     cmdline: list[str]
     pid: int
+    status: str = "working"
+    task_summary: str = ""
 
     @property
     def display_name(self) -> str:
@@ -40,6 +63,11 @@ class AIProcess:
         except ValueError:
             # 不在 home 下，返回完整路径
             return str(cwd_path)
+
+    @property
+    def project_name(self) -> str:
+        """Project label derived from this AI process's working directory."""
+        return project_name_for_cwd(self.cwd)
 
 
 @dataclass
@@ -78,7 +106,13 @@ class OSWindowStatus:
         return any(tab.has_ai for tab in self.tabs)
 
 
-def _extract_ai_processes(windows: list[dict]) -> list[AIProcess]:
+def _extract_ai_processes(
+    windows: list[dict],
+    *,
+    socket: str = "",
+    registry: dict[str, dict] | None = None,
+    tab_title: str = "",
+) -> list[AIProcess]:
     """从窗口列表中提取 AI 进程"""
     processes = []
 
@@ -89,17 +123,27 @@ def _extract_ai_processes(windows: list[dict]) -> list[AIProcess]:
             if not cmdline:
                 continue
 
-            # 检查第一个参数（可执行文件名）
-            cmd_name = cmdline[0].lower()
-            base_name = cmd_name.split('/')[-1]  # 提取文件名部分
+            # 检查第一个参数（可执行文件路径）
+            cmd_path = cmdline[0]
+            base_name = cmd_path.split('/')[-1].lower()  # 提取文件名部分
 
             # 严格匹配：只有可执行文件名是 claude 或 codex 才算
             if base_name in ('claude', 'codex'):
+                registry_entry = {}
+                if registry and socket:
+                    registry_entry = registry.get(
+                        build_terminal_id(str(window.get('id', '')), socket),
+                        {},
+                    )
+                agent_kind = base_name
                 processes.append(AIProcess(
-                    name=cmdline[0],
+                    name=base_name,  # 使用 basename 而不是完整路径
                     cwd=proc.get('cwd', ''),
                     cmdline=cmdline,
-                    pid=proc.get('pid', 0)
+                    pid=proc.get('pid', 0),
+                    status=registry_entry.get('status', 'working'),
+                    task_summary=registry_entry.get('task_summary', '')
+                    or task_summary_for(proc.get('cwd', ''), agent_kind, tab_title),
                 ))
 
     return processes
@@ -134,7 +178,7 @@ def _find_all_kitty_sockets() -> list[str]:
     # 方法 2: 从 registry 获取
     try:
         registry = load_registry()
-        for term in registry:
+        for term in registry.values():
             socket = term.get('kitty_socket', '')
             if socket:
                 sockets.add(socket)
@@ -152,6 +196,7 @@ def scan_all_windows() -> list[OSWindowStatus]:
     """扫描所有 Kitty 窗口"""
     windows = []
     sockets = _find_all_kitty_sockets()
+    registry = load_registry()
 
     for socket in sockets:
         os_windows_data = _get_kitty_ls(socket)
@@ -162,12 +207,19 @@ def scan_all_windows() -> list[OSWindowStatus]:
             tabs = []
 
             for tab_data in os_win.get('tabs', []):
-                ai_processes = _extract_ai_processes(tab_data.get('windows', []))
+                ai_processes = _extract_ai_processes(
+                    tab_data.get('windows', []),
+                    socket=socket,
+                    registry=registry,
+                    tab_title=tab_data.get('title', ''),
+                )
 
                 tabs.append(TabStatus(
                     tab_id=tab_data.get('id', 0),
                     title=tab_data.get('title', ''),
-                    is_focused=tab_data.get('is_focused', False),
+                    # is_active 表示该 Kitty window 当前打开的 tab；
+                    # is_focused 作为旧版本/异常数据的兼容回退。
+                    is_focused=tab_data.get('is_active', tab_data.get('is_focused', False)),
                     window_count=len(tab_data.get('windows', [])),
                     ai_processes=ai_processes
                 ))

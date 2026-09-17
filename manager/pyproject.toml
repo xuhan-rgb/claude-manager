@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "textual>=0.40.0",
     "psutil>=5.9.0",
+    "PyQt5>=5.15.0",
     "pyyaml>=6.0",
 ]
 
@@ -38,6 +39,7 @@ dev = [
 [project.scripts]
 claude-manager = "claude_manager.cli:main"
 agent-terminals = "claude_manager.tabs.cli:main"
+work-status = "claude_manager.tabs.work_status_gui:main"
 
 [project.urls]
 Homepage = "https://github.com/user/claude-manager"
