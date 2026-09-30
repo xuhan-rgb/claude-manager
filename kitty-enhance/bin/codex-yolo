@@ -38,6 +38,7 @@ for arg in "$@"; do
     esac
 done
 
-# Permissions come from base config; explicit overrides prevent remote resume.
-exec "${runner[@]}" -p yolo \
+# Read base config on each launch; a legacy yolo profile may override its model.
+# Explicit permission overrides prevent remote resume.
+exec "${runner[@]}" \
     --remote "unix://$daemon_socket" "${cwd_args[@]}" "$@"

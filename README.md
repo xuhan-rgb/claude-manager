@@ -298,7 +298,7 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 **安装支持 remote 的 `codex-yolo`（其他电脑也可用）**
 
 前提：Linux/macOS 上有 Bash、Python 3，以及支持 `--remote`、
-`app-server daemon start` 和独立 `yolo.config.toml` profile 的 Codex CLI。
+`app-server daemon start` 的 Codex CLI。
 请先在目标电脑配置 Codex 登录或 API provider。安装脚本使用本机 CLI 检查 remote 和 daemon 命令；
 不下载 Codex，也不复制其他电脑的密钥、账号或项目路径。
 
@@ -319,7 +319,9 @@ codex-yolo resume --last
 启动流程沿用当前系统配置：优先通过已有的 `codex-auth run --` 选择账号；
 未安装 `codex-auth` 时直接使用 PATH 中的 `codex`。
 先启动或复用本地共享 daemon，读取返回的 `socketPath`，再使用
-`-p yolo --remote unix://…` 连接。
+`--remote unix://…` 连接。
+启动时不再自动选择 `yolo` profile，避免旧 `yolo.config.toml` 覆盖主配置。
+修改 `${CODEX_HOME:-~/.codex}/config.toml` 中的模型后，新打开的 `codex-yolo` 对话直接使用新配置。
 这里的 remote 指本机 Unix socket。其他参数原样传给交互客户端；
 `--help` / `--version` 不启动 daemon。daemon 启动失败或响应缺少有效 socket 时停止启动。
 

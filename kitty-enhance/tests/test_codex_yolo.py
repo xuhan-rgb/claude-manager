@@ -72,7 +72,6 @@ def test_daemon_then_remote_with_arguments_and_exit_status(environment, with_aut
     assert daemon["window"] is None and daemon["socket"] is None
     assert tui["window"] == "42" and tui["socket"] == "unix:@test"
     assert tui["args"] == [
-        "-p", "yolo",
         "--remote", "unix:///tmp/test daemon.sock", "--cd", "/tmp/a b", "hello world",
     ]
     assert daemon["auth"] == tui["auth"] == ("1" if with_auth else None)
@@ -166,7 +165,7 @@ def test_explicit_directory_is_preserved(environment, options):
     result = launch(env, *options)
     assert result.returncode == 0, result.stderr
     args = json.loads(log.read_text().splitlines()[-1])["args"]
-    assert args[4:] == options
+    assert args[2:] == options
 
 
 @pytest.mark.parametrize("options", [[], ["resume"], ["resume", "--last"],
@@ -176,7 +175,7 @@ def test_remote_resume_has_no_explicit_permission_flags(environment, options):
     result = launch(env, *options)
     assert result.returncode == 0, result.stderr
     args = json.loads(log.read_text().splitlines()[-1])["args"]
-    assert args == ["-p", "yolo", "--remote", "unix:///tmp/test daemon.sock",
+    assert args == ["--remote", "unix:///tmp/test daemon.sock",
                     "-C", os.getcwd(), *options]
 
 
@@ -229,3 +228,23 @@ def test_install_removes_all_resume_permission_override_keys(environment, permis
     subprocess.run(["bash", str(ROOT / "install-codex-yolo.sh")], env=env,
                    check=True, capture_output=True)
     assert profile.read_text() == 'model = "my-model"\n[tui]\nmouse = true\n'
+
+
+def test_launcher_uses_base_config_without_implicit_profile(environment):
+    home, _, log, env = environment
+    codex_home = home / ".codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    profile = codex_home / "yolo.config.toml"
+    profile.write_text('model = "stale-model"\n')
+    for model in ("first-model", "second-model"):
+        config.write_text(f'model = "{model}"\n')
+        result = launch(env)
+        assert result.returncode == 0, result.stderr
+        args = json.loads(log.read_text().splitlines()[-1])["args"]
+        assert "-p" not in args
+        assert "--profile" not in args
+        assert "--model" not in args
+        assert "-m" not in args
+        assert config.read_text() == f'model = "{model}"\n'
+        assert profile.read_text() == 'model = "stale-model"\n'
