@@ -305,7 +305,7 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 在仓库根目录执行（无需安装 Kitty）：
 
 ```bash
-bash kitty-enhance/install.sh --codex-only
+bash kitty-enhance/install-codex-yolo.sh
 source ~/.bashrc  # zsh 用户：source ~/.zshrc；也可以重新打开终端
 codex-yolo
 codex-yolo --cd /path/to/project
