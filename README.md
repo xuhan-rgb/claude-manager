@@ -295,6 +295,45 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 - 目前 Codex 复用了同一套 Tab 恢复逻辑；Claude 的黄色确认通知保持原样
 - Tab 标题会同步成最近聚焦的 AI 窗口标题；Claude 提交 prompt 时会登记任务摘要，供 `work-status` 显示
 
+**安装支持 remote 的 `codex-yolo`（其他电脑也可用）**
+
+前提：Linux/macOS 上有 Bash、Python 3，以及支持 `--remote`、
+`app-server daemon start` 和独立 `yolo.config.toml` profile 的 Codex CLI。
+请先在目标电脑配置 Codex 登录或 API provider。安装脚本使用本机 CLI 检查 remote 和 daemon 命令；
+不下载 Codex，也不复制其他电脑的密钥、账号或项目路径。
+
+在仓库根目录执行（无需安装 Kitty）：
+
+```bash
+bash kitty-enhance/install.sh --codex-only
+source ~/.bashrc  # zsh 用户：source ~/.zshrc；也可以重新打开终端
+codex-yolo
+codex-yolo --cd /path/to/project
+codex-yolo resume --last
+```
+
+安装到 `~/.local/bin/codex-yolo`，支持重复运行。完整 Kitty 安装也会尝试安装该命令。
+安装器在 shell rc 末尾添加受管理的配置块，使旧的同名 alias/函数不再遮蔽新命令；
+首次修改前将原 rc 备份为 `.bashrc.before-codex-yolo` / `.zshrc.before-codex-yolo`。
+
+启动流程沿用当前系统配置：优先通过已有的 `codex-auth run --` 选择账号；
+未安装 `codex-auth` 时直接使用 PATH 中的 `codex`。
+先启动或复用本地共享 daemon，读取返回的 `socketPath`，再使用
+`-p yolo --remote unix://…` 连接。
+这里的 remote 指本机 Unix socket。其他参数原样传给交互客户端；
+`--help` / `--version` 不启动 daemon。daemon 启动失败或响应缺少有效 socket 时停止启动。
+
+安装器在 `${CODEX_HOME:-~/.codex}/config.toml` 设置基础默认权限
+`approval_policy = "never"` 和 `sandbox_mode = "danger-full-access"`；普通 `codex`
+新建任务也会继承 YOLO 默认权限。已有 `yolo.config.toml` 的权限字段与权限配置块会移除，
+其余模型、provider、skills 和 MCP 设置保留；缺少时创建仅继承基础配置的最小 profile。
+首次修改已有配置前备份为 `config.toml.before-codex-yolo` / `yolo.config.toml.before-codex-yolo`。
+不在启动命令中添加权限覆盖，使 `codex-yolo resume`、`resume --last` 和进入后 `/resume`
+均可沿用服务端保存的任务权限；旧任务不会被强制改为 YOLO。更新后退出旧交互客户端再启动，
+后台 daemon 无需因本次配置迁移而重启。不会安装或覆盖 `codex-auth`。
+`--codex-only` 不安装 Kitty 通知组件；已有 Kitty wrapper 时，daemon 管理调用不触发窗口监控，
+交互客户端仍保留 Kitty 环境。共享 daemon 下多窗口会话与任务摘要的精确绑定不在此安装功能范围内。
+
 **Tab 管理命令**
 
 在 Shell 中使用快速命令管理 Tab：

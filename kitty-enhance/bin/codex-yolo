@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# kitty-enhance codex-yolo: connect to the shared local daemon.
+set -euo pipefail
+
+# Use each machine's existing credentials and account selection.
+if command -v codex-auth >/dev/null 2>&1; then
+    runner=(codex-auth run --)
+else
+    runner=(codex)
+fi
+
+# Help/version should not start a background service.
+if [[ ${1:-} == --help || ${1:-} == -h || ${1:-} == --version || ${1:-} == -V ]]; then
+    exec "${runner[@]}" "$@"
+fi
+
+# A daemon management command must not start/replace this window's Kitty monitor.
+daemon_result=$(env -u KITTY_WINDOW_ID -u KITTY_LISTEN_ON "${runner[@]}" app-server daemon start)
+daemon_socket=$(python3 -c '
+import json
+import sys
+
+try:
+    path = json.load(sys.stdin)["socketPath"]
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError("expected an absolute socketPath")
+except (ValueError, KeyError, TypeError) as exc:
+    sys.exit(f"codex-yolo: invalid daemon response: {exc}")
+print(path)
+' <<< "$daemon_result")
+
+# Remote sessions need an explicit directory instead of the daemon's startup cwd.
+cwd_args=(-C "$PWD")
+for arg in "$@"; do
+    case "$arg" in
+        --) break ;;
+        -C|--cd|-C?*|--cd=*) cwd_args=(); break ;;
+    esac
+done
+
+# Permissions come from base config; explicit overrides prevent remote resume.
+exec "${runner[@]}" -p yolo \
+    --remote "unix://$daemon_socket" "${cwd_args[@]}" "$@"

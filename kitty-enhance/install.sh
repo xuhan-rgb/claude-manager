@@ -31,6 +31,7 @@ print_help() {
     echo "  --bridge-only  仅安装飞书桥接（不替换 kitty 配置）"
     echo "  --full         完整安装（默认，含 kitty 配置定制）"
     echo "  --qq-only      仅安装 qq 到 ~/.local/bin（跳过其它一切）"
+    echo "  --codex-only   仅安装支持本地 remote daemon 的 codex-yolo"
     echo "  -h, --help     显示帮助"
 }
 
@@ -532,10 +533,16 @@ main() {
             --bridge-only) INSTALL_MODE="bridge-only"; shift ;;
             --full)        INSTALL_MODE="full"; shift ;;
             --qq-only)     INSTALL_MODE="qq-only"; shift ;;
+            --codex-only)  INSTALL_MODE="codex-only"; shift ;;
             -h|--help)     print_help; exit 0 ;;
             *)             error "未知参数: $1"; print_help; exit 1 ;;
         esac
     done
+
+    if [ "$INSTALL_MODE" = "codex-only" ]; then
+        bash "$(dirname "${BASH_SOURCE[0]}")/install-codex-yolo.sh"
+        exit 0
+    fi
 
     # qq-only 模式：装完 qq 直接退出
     if [ "$INSTALL_MODE" = "qq-only" ]; then
@@ -564,6 +571,9 @@ main() {
         install_shell_functions
         install_qq
         install_codex_wrapper
+        if ! bash "$(dirname "${BASH_SOURCE[0]}")/install-codex-yolo.sh"; then
+            warning "codex-yolo 未安装完成；安装兼容的 Codex CLI 后运行 ./install.sh --codex-only"
+        fi
         echo ""
         # full 模式：符号链接到 ~/.claude/hooks/，settings.json 指向该目录
         install_claude_hooks

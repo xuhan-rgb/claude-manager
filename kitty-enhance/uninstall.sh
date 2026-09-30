@@ -57,11 +57,15 @@ for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zshrc_custom"; do
         sed -i -e '/# Kitty Tab.*kitty-enhance/d' -e '/# source claude-manager/d' "$rc_file"
         sed -i '\|kitty-enhance/shell-functions.sh\|d' "$rc_file"
         sed -i '\|claude-manager/shell-functions.sh\|d' "$rc_file"
+        sed -i '/^# >>> kitty-enhance codex-yolo >>>$/,/^# <<< kitty-enhance codex-yolo <<<$/{d;}' "$rc_file"
     fi
 done
 
 if [ -f "$LOCAL_CODEX_WRAPPER" ] && grep -q "kitty-enhance codex wrapper" "$LOCAL_CODEX_WRAPPER"; then
     rm -f "$LOCAL_CODEX_WRAPPER"
+fi
+if [ -f "$HOME/.local/bin/codex-yolo" ] && grep -q "kitty-enhance codex-yolo:" "$HOME/.local/bin/codex-yolo"; then
+    rm -f "$HOME/.local/bin/codex-yolo"
 fi
 echo "  -> 已清理"
 

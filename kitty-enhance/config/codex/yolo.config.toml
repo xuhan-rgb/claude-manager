@@ -1,0 +1,2 @@
+# Inherit model, provider, skills and MCP settings from this machine's config.toml.
+# Permissions also come from config.toml so remote resume can restore saved settings.
