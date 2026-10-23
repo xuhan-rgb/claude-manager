@@ -1,145 +1,83 @@
 # Claude Manager
 
-基于 Kitty 终端的轻量级任务管理器，专为 Claude Code / Codex 和 ROS2 开发工作流设计。
+面向 Claude Code / Codex 开发工作流的 Kitty 终端工具集，包含 Tab 状态提示、会话备份、工作状态看板，以及仍在开发中的任务管理 TUI。
 
-## 功能特性
+## 功能与入口
 
-- **终端发现**: 自动发现所有运行中的 Claude/Codex 终端，交互式跳转
-- **工作状态看板**: `work-status` GUI 按工程分组，显示当前任务摘要，支持跳转/关 Tab
-- **任务管理**: 创建、追踪、管理开发任务
-- **多终端支持**: 同时管理多个终端窗口（Claude、Codex、Shell、ROS2 等）
-- **状态检测**: 自动检测 AI 任务状态（运行中/已完成/等待确认）
-- **Codex 集成**: Shell 包装 + 事件监控，Tab 自动变色通知
-- **布局预设**: 一键切换专注/开发/测试/监控模式
-- **Kitty + Tmux 集成**: 深度集成 Kitty Remote Control 和 Tmux
+| 需求 | 入口 | 说明 |
+|------|------|------|
+| 查看 AI 工作状态、管理 Tab | Kitty 增强 | 运行时选中 Tab 为主题绿色，未选中为蓝色；完成为红色，Claude 等待确认为黄色 |
+| 保存和恢复终端会话 | `tab-save` / `tab-restore` | 保存当前 Kitty 窗口的 Tab，支持定时覆盖备份和对话恢复 |
+| 按工程查看任务 | `work-status` | GUI 看板，支持跳转和关闭 Tab |
+| 查找、切换 AI 终端 | `agent-terminals` | 交互列表、状态筛选、JSON 输出，支持多个 Kitty 实例 |
+| 使用本地 Codex daemon | `codex-yolo` | 独立安装，共享本机 Unix socket，支持恢复会话 |
+| 按会话选择 skill / MCP | `tools/ai-run` | 仅影响本次启动 |
+| 输入分类与任务分派 | Jev（实验性） | 根据判断分派给 Luna，失败或不确定时交回当前会话 |
+| 管理任务与 tmux 工作区 | `claude-manager`（开发中） | TUI 任务面板、状态检测和布局预设 |
 
-## 核心特性
+## 导航
 
-**Claude / Codex 自动状态提示** ⭐
-- Claude 工作中：Tab 变蓝（非聚焦时显示）
-- Claude 完成时：Tab 变红 + 桌面通知（非聚焦时显示）
-- Codex 工作中：Tab 变蓝（独立链路，不改 Claude hook）
-- Codex 当前轮次完成：Tab 变红
-- 查看结果后：自动恢复原色（3 秒）
-- Tab 标题跟随最近聚焦的 Claude/Codex 窗口（工作中保留 spinner）
-- `work-status` 看板显示每个窗口正在处理的任务
+- [快速开始](#快速开始) · [依赖](#依赖)
+- [Kitty 配置与快捷键](#kitty-配置) · [AI 状态提示](#ai-状态提示)
+- [Codex 独立启动器](#codex-独立启动器) · [Tab 管理](#tab-管理命令) · [会话备份与恢复](#会话备份与恢复)
+- [工作状态看板](#工作状态看板) · [终端发现与跳转](#终端发现与跳转)
+- [飞书终端管理中心](#飞书终端管理中心) · [Tmux 配置](#tmux-配置)
+- [按会话选择 skill / MCP](#按会话选择-skill--mcp) · [Jev 输入分派](#jev-输入分派)
+- [Claude Manager TUI](#claude-manager-tui) · [配置文件](#配置文件) · [数据存储](#数据存储)
+- [开发](#开发) · [项目结构](#项目结构)
 
----
+## 快速开始
 
-## 使用方式
+本节命令均从仓库根目录执行；Kitty 安装使用子 Shell，执行后仍停留在根目录。
 
-本仓库提供 **两种** 使用方式，可根据需求选择：
+### 1. 安装 Kitty 增强
 
-### 方式一：Kitty 优化 ⭐（推荐快速开始）
+适合日常 Claude Code / Codex 开发，无需 tmux。
 
-**适用场景**：日常 Claude Code 开发，需要自动状态提示和快速 Tab 管理
-
-**特点**：
-- ✅ 轻量化（仅需 Kitty 配置 + Shell 函数）
-- ✅ Claude / Codex 工作状态自动显示（Tab 变色：蓝→红→自动恢复）
-- ✅ Tab 快速管理（`tab-rename`, `tab-project`, `tab-alert` 等）
-- ✅ 无需 Tmux，直接在 Kitty 中使用
-
-**安装**：
 ```bash
-cd kitty-enhance && ./install.sh
+(cd kitty-enhance && ./install.sh)
+
+# 在 Kitty 中重新加载配置和 Shell 函数
+kitty @ --to unix:@mykitty load-config
+source ~/.bashrc  # zsh 用户使用 source ~/.zshrc
+
+# 常用操作
+tab-project              # Tab 标题设为项目名 + 分支
+tab-rename               # 交互式重命名
+tab-save work            # 立即保存，并默认每 10 分钟更新快照
 ```
 
-⚠️ **配置改变**（仅 Kitty 相关）：
-- 复制配置到 `~/.config/kitty/`（主配置、主题、脚本）
-- 添加 Shell 函数到 `~/.bashrc` / `~/.zshrc`
-- 添加 Claude Code Hook 到 `~/.claude/hooks/`
+安装器会复制 Kitty 配置和辅助脚本，配置 Claude Code Hooks，并向 Shell rc 添加函数加载入口。
+完整安装也会尝试安装 `codex-yolo`；其默认权限修改和配置备份见 [Codex 独立启动器](#codex-独立启动器)。
 
-**使配置生效**：
+### 2. 安装终端管理与工作状态看板
+
+需要 Python 3.10+ 和 `uv`，依赖安装见下一节。此入口无需启动任务 TUI 或 tmux。
+
 ```bash
-# 重新加载 Kitty 配置（无需重启）
-kitty +kitten @ load-config --to unix:@mykitty
-
-# 重新加载 Shell 配置
-source ~/.bashrc  # 或 source ~/.zshrc
+bash manager/install.sh
+work-status                 # 打开工作状态 GUI
+agent-terminals             # 交互式选择并跳转终端
+agent-terminals list --active # 只看运行中 / 等待确认的终端
 ```
 
-**快速命令**（详见下方快捷键说明）：
+安装器使用 `uv` 创建 Python 虚拟环境，以 editable 模式安装，并将
+`claude-manager`、`agent-terminals`、`work-status` 链接到 `~/.local/bin/`。
+请确保该目录在 `PATH` 中。卸载使用 `bash manager/install.sh --uninstall`。
+
+### 3. 按需启用任务 TUI
+
+TUI 仍在开发中，日常终端管理建议使用上面的 Kitty 增强和独立终端管理入口。
+需要先安装 Kitty 增强、Manager 和 tmux 2.4+。
+
 ```bash
-tr / tab-rename    # 重命名 Tab
-tp / tab-project   # 自动项目名 + 分支
-ta / tab-alert     # 标记为红色
+claude-manager --check       # 检查环境
+claude-manager              # 启动任务面板和 tmux 工作区
+claude-manager --debug      # 启用调试面板
 ```
 
-详细说明：见 [Kitty 增强功能](#kitty-增强功能-) 章节
-
----
-
-### 方式二：Agent Terminal Manager（独立终端管理）
-
-**适用场景**：只想管理所有 Claude/Codex 终端，不需要任务面板和 tmux 分屏
-
-**特点**：
-- ✅ 独立命令入口，不依赖 `claude-manager` 任务 TUI
-- ✅ 自动发现所有 Claude/Codex 终端
-- ✅ `work-status` 看板按工程查看当前任务，单击跳转
-- ✅ 支持多 kitty 实例，终端 ID 使用 `terminal_id` 避免同号窗口互相覆盖
-- ✅ 兼容旧命令：`claude-manager tabs ...`
-
-**使用方式**：
-```bash
-work-status                       # 工作状态 GUI（别名 ws）
-agent-terminals                   # 交互式选择（↑↓ 选择，Enter 跳转，q 退出）
-agent-terminals list              # 列表模式
-agent-terminals list --active     # 只看 working/waiting
-agent-terminals list --json       # JSON 输出
-agent-terminals focus <terminal_id>  # 按 terminal_id 直接跳转
-agent-terminals work-status -i    # 终端内交互式工作进度
-```
-
----
-
-### 方式三：Claude Manager TUI（任务面板 + tmux）
-
-⚠️ **当前状态**：此方案仍在开发中，**不建议用于生产环境**。建议使用方式一（Kitty 优化）进行日常开发。
-
-**适用场景**：复杂多任务开发（ROS2、多项目并行）、需要集中管理多个 Claude 会话
-
-**特点**：
-- ✅ **终端发现** — 自动发现并列出所有 Claude/Codex 终端，交互式跳转
-- ✅ TUI 任务管理面板（创建/删除/切换任务，禁止重名）
-- ✅ 自动任务状态检测（运行中/已完成）
-- ✅ 工作目录路径补全（输入提示 + ↓ 弹出目录列表浏览）
-- ✅ Tmux 深度集成（分屏管理、窗口布局）
-- ✅ 环境变量自动继承（无需手动配置文件）
-- ✅ 结合 Kitty 优化 + Tmux 优化 + Claude Manager
-
-**前置要求**：
-- 已安装 Kitty 优化（方式一）
-- Tmux 2.4+ 已安装
-
-**安装**：
-```bash
-cd manager && ./install.sh
-```
-
-> 安装脚本会自动用 `uv` 创建 Python 3.10 虚拟环境、editable 安装、软链接 `claude-manager` 命令到 `~/.local/bin/`。卸载：`./install.sh --uninstall`
-
-**终端发现与跳转**（安装后即可用，兼容旧入口）：
-```bash
-agent-terminals                  # 推荐：独立终端管理入口
-claude-manager tabs              # 兼容旧入口（等价于 agent-terminals）
-claude-manager tabs list         # 列表模式
-claude-manager tabs list --active  # 只看 working/waiting
-claude-manager tabs list --json  # JSON 输出
-claude-manager tabs focus <terminal_id>   # 按 terminal_id 直接跳转
-```
-
-**TUI 管理器**（需要 tmux）：
-```bash
-claude-manager                   # 启动 TUI（自动创建分屏）
-claude-manager --check           # 查看环境配置
-claude-manager --debug           # 启用调试面板
-```
-
-**TUI 快速键**：`n` 新建任务 / `Enter` 激活 / `1-5` 快速切换
-
-详细说明：见 [Claude Manager 使用](#claude-manager-使用) 章节
+任务操作和快捷键见 [Claude Manager TUI](#claude-manager-tui)。旧入口
+`claude-manager tabs ...` 仍兼容，等价于 `agent-terminals ...`。
 
 ---
 
@@ -167,7 +105,7 @@ sudo apt install kitty tmux wmctrl xclip
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 安装 Claude Manager
-cd manager && ./install.sh
+bash manager/install.sh
 ```
 
 ---
@@ -176,7 +114,7 @@ cd manager && ./install.sh
 
 ### Kitty 配置
 
-配置文件：`config/kitty/`
+配置文件：[kitty-enhance/config/kitty/](kitty-enhance/config/kitty/)
 
 | 文件 | 说明 |
 |------|------|
@@ -264,25 +202,18 @@ kitty @ send-text --match id:1 "echo hello"
 kitty @ set-window-title "My Window"
 ```
 
-#### Kitty 增强功能 ⭐
+### AI 状态提示
 
-**Claude Code 自动状态提示**
+Claude Code Hooks 和 Codex 事件监控会更新 Tab 状态；Tab 标题跟随最近聚焦的 AI 窗口。
 
-Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务状态：
-
-```
-思考中      调用工具      询问确认      完成后
-（未配）      ↓            ↓            ↓
-⚪ 白色    🔵 蓝色      🟡 黄色      🔴 红色
-                      （非聚焦）    （非聚焦）
-                                      ↓
-                                  切换到 Tab
-                                      ↓
-                                  ⚪ 3秒后恢复
-```
+| 状态 | Tab 显示 |
+|------|----------|
+| 运行中 | 选中为主题绿色，未选中为蓝色 |
+| 等待确认（Claude） | 黄色通知 |
+| 当前轮次完成 | 红色通知 |
+| 聚焦带通知的 Tab | 清除红 / 黄通知，恢复默认颜色 |
 
 **工作流程**：
-- **思考阶段**：白色（暂无专门 Hook）
 - `on-tool-use.sh`：调用工具时记录运行状态 → 选中为主题绿色，未选中为蓝色
 - `on-notify.sh`：需要确认时 → 黄色（权限对话框、输入确认等）
 - `on-stop.sh`：完成回答时 → 红色（非聚焦显示）
@@ -295,7 +226,9 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 - 目前 Codex 复用了同一套 Tab 恢复逻辑；Claude 的黄色确认通知保持原样
 - Tab 标题会同步成最近聚焦的 AI 窗口标题；Claude 提交 prompt 时会登记任务摘要，供 `work-status` 显示
 
-**安装支持 remote 的 `codex-yolo`（其他电脑也可用）**
+### Codex 独立启动器
+
+`codex-yolo` 可以单独安装到其他电脑，无需完整 Kitty 增强。
 
 前提：Linux/macOS 上有 Bash、Python 3，以及支持 `--remote`、
 `app-server daemon start` 的 Codex CLI。
@@ -337,7 +270,7 @@ codex-yolo resume --last
 `--codex-only` 不安装 Kitty 通知组件；已有 Kitty wrapper 时，daemon 管理调用不触发窗口监控，
 交互客户端仍保留 Kitty 环境。共享 daemon 下多窗口会话与任务摘要的精确绑定不在此安装功能范围内。
 
-**Tab 管理命令**
+### Tab 管理命令
 
 在 Shell 中使用快速命令管理 Tab：
 
@@ -355,13 +288,32 @@ codex-yolo resume --last
 | `tab-list` | - | 列出已保存的 Tab 快照 | `tab-list` |
 | `tab-backup` | - | 查看、停止周期任务，或恢复最近一份周期快照 | `tab-backup status` |
 
+**使用示例**：
+```bash
+# 快速重命名当前 Tab
+tr                  # 交互式，支持 git 分支检测
+tr "feature-x"      # 直接指定名称
+
+# 自动设置项目名+分支
+tp                  # 变为 "project-name (main)"
+
+# 颜色标记
+ta                  # 红色（需要关注）
+tab-warning         # 黄色（警告）
+tab-done            # 绿色（完成）
+tc                  # 重置为默认
+```
+
+### 会话备份与恢复
+
 `tab-save work` 会先保存一次，然后通过用户级 systemd timer 每 10 分钟更新
 `work.session` 和 `work.meta.json`，仅保留最新一份，不生成历史文件。
 不传名称时使用 `auto`。周期任务在后台执行，不占用执行命令的 Shell。
 首次更新命令后，在现有 Shell 中运行：
 
 ```bash
-source /mnt/data/claude-manager/kitty-enhance/shell-functions.sh
+# 在仓库根目录执行
+source kitty-enhance/shell-functions.sh
 
 tab-save work                 # 立即保存，并每 10 分钟更新
 tab-save work --interval 30m  # 修改频率（支持 s、m、h）
@@ -395,43 +347,7 @@ Claude 按 PID 读取会话记录；普通 Codex 读取该进程打开的会话�
 `no session-id, fresh restore`，
 此时保留启动命令，无法保证恢复到原对话。远程网络 daemon 的会话识别尚未支持。
 
-**使用示例**：
-```bash
-# 快速重命名当前 Tab
-tr                  # 交互式，支持 git 分支检测
-tr "feature-x"      # 直接指定名称
-
-# 自动设置项目名+分支
-tp                  # 变为 "project-name (main)"
-
-# 颜色标记
-ta                  # 红色（需要关注）
-tab-warning         # 黄色（警告）
-tab-done            # 绿色（完成）
-tc                  # 重置为默认
-```
-
-**安装增强功能**
-
-增强功能已包含在 `kitty-enhance/` 中，通过一键安装脚本配置：
-
-```bash
-cd kitty-enhance && ./install.sh    # 配置 hooks 和 shell 函数
-```
-
-安装内容：
-- ✅ 复制 Kitty 配置到 `~/.config/kitty/`
-- ✅ 复制优化脚本到 `~/.config/kitty/scripts/`（含 Tab 标题监控、Codex 事件监控）
-- ✅ 配置 Claude Code Hooks 到 `~/.claude/hooks/`（含 `UserPromptSubmit`）
-- ✅ 添加 Shell 函数到 `.bashrc`/`.zshrc`
-
-**安装后使配置生效**：
-```bash
-kitty +kitten @ load-config --to unix:@mykitty
-source ~/.bashrc
-```
-
-**故障排查**
+### Tab 状态故障排查
 
 如果 Tab 没有变色或自动恢复不工作：
 
@@ -440,7 +356,7 @@ source ~/.bashrc
 ls -l ~/.claude/hooks/
 
 # 2. 检查 Shell 函数是否加载
-which tab-rename
+type tab-rename
 
 # 3. 启用调试日志
 export CLAUDE_HOOK_DEBUG=1
@@ -454,7 +370,7 @@ kitty @ ls
 
 ---
 
-### 飞书终端管理中心（Feishu Terminal Hub）
+## 飞书终端管理中心
 
 通过飞书远程管理所有 Claude Code / Codex 终端：权限审批、进度查看、远程指令。
 
@@ -474,7 +390,7 @@ kitty @ ls
 
 **消息通道**：WebSocket 长连接 + API 轮询双通道，消息延迟 ~2 秒（WebSocket 固有延迟 ~15 秒，API 轮询兜底）。
 
-#### 飞书指令速查
+### 飞书指令速查
 
 | 指令 | 功能 | 示例 |
 |------|------|------|
@@ -491,13 +407,13 @@ kitty @ ls
 
 > 终端处于工作中/等待状态时，发送指令会先弹出确认，避免误操作。
 
-#### 前置条件
+### 前置条件
 
 1. Kitty 终端（已启用 `allow_remote_control`）
 2. Python 3.10+ 与 `lark-oapi` 依赖
 3. 飞书自建应用（见下方配置步骤）
 
-#### 飞书应用配置
+### 飞书应用配置
 
 1. **创建应用**：登录 [飞书开放平台](https://open.feishu.cn/app) → 创建自建应用
 
@@ -520,7 +436,7 @@ kitty @ ls
 
 7. **获取 open_id**：应用上线后，在飞书中搜索你的机器人 → 发一条消息 → 守护进程日志会打印你的 `open_id`（格式：`ou_xxxxxxxx`）
 
-#### 安装与配置
+### 安装与配置
 
 ```bash
 # 安装 Python 依赖
@@ -550,7 +466,7 @@ hub:
   command_max_length: 500         # 指令最大长度
 ```
 
-#### 使用
+### 使用
 
 ```bash
 # 启动守护进程
@@ -569,15 +485,15 @@ python daemon.py stop
 - **完成通知**：Claude / Codex 完成回答后推送对话内容到飞书
 - **终端管理**：随时发送 `ls` 查看所有终端，`#N 进度` 查看屏幕
 
-#### 终端自动注册
+### 终端自动注册
 
-终端通过两种方式注册到管理中心：
+终端通过三种方式注册到管理中心：
 
 1. **Hook 实时注册**（推荐）：Claude Code Hook 在工具调用、完成、权限弹窗时自动注册终端状态
 2. **Codex 包装器注册**：Shell 中启动 `codex` 时，后台监视会话事件并注册状态
 3. **定期扫描**：守护进程定期扫描所有 Kitty 实例，发现运行 Claude / Codex 的窗口自动注册
 
-#### 新用户接入（一键配置）
+### 新用户接入（一键配置）
 
 飞书应用只需创建一次，团队共用同一个 App ID / App Secret。新用户接入只需：
 
@@ -592,15 +508,15 @@ bash setup.sh
 - **App ID** 和 **App Secret** — 团队共用
 - 飞书中搜索机器人名字，发一条消息 — 脚本自动获取 open_id
 
-#### 首次建立长连接
+### 首次建立长连接
 
 飞书后台保存「长连接」配置时要求客户端已连接。首次配置时先启动守护进程（`python daemon.py`），再去飞书后台点「保存」。
 
 ---
 
-### Tmux 配置
+## Tmux 配置
 
-配置文件：`config/tmux/`
+配置文件：[kitty-enhance/config/tmux/](kitty-enhance/config/tmux/)
 
 | 文件 | 说明 |
 |------|------|
@@ -608,7 +524,7 @@ bash setup.sh
 | `install.sh` | 一键安装脚本 |
 | `README.md` | 快捷键文档 |
 
-#### Tmux 快捷键
+### Tmux 快捷键
 
 **前缀键**: `Ctrl+a`（已从 `Ctrl+b` 修改）
 
@@ -649,7 +565,7 @@ bash setup.sh
 | `前缀 + s` | 同步输入模式 | 向所有面板同时输入（广播） |
 | `前缀 + r` | 重载配置 | 修改 tmux.conf 后重载 |
 
-#### 鼠标滚轮翻页 ⭐
+### 鼠标滚轮翻页 ⭐
 
 | 操作 | 效果 | 说明 |
 |------|------|------|
@@ -658,7 +574,7 @@ bash setup.sh
 | **打字** | **自动退出，正常输入** | 无需手动退出 |
 | `q` / `Escape` | 退出 copy-mode | 手动退出 |
 
-#### Copy-mode（Vi 风格）
+### Copy-mode（Vi 风格）
 
 | 快捷键 | 功能 | 说明 |
 |--------|------|------|
@@ -670,7 +586,7 @@ bash setup.sh
 | `PageUp/Down` | 翻页 | 快速翻页 |
 | 鼠标拖选 | 选择并复制 | 自动复制到系统剪贴板 |
 
-#### Tmux 常用命令
+### Tmux 常用命令
 
 ```bash
 # 列出所有会话
@@ -710,7 +626,7 @@ agent-terminals work-status --json     # JSON
 - 右键：忽略/取消忽略某个 Kitty 窗口
 - 任务文案优先来自当前窗口刚提交的 prompt；没有则读本地 Claude/Codex session
 
-安装：`cd manager && ./install.sh`（会链接 `work-status` 到 `~/.local/bin/`）
+安装：`bash manager/install.sh`（会链接 `work-status` 到 `~/.local/bin/`）
 
 ## 终端发现与跳转
 
@@ -753,13 +669,16 @@ python3 tools/ai-run claude --skills none --mcp none --yolo
 python3 tools/ai-run codex --skills brainstorming --mcp openaiDeveloperDocs -- --model gpt-5.6-sol
 ```
 
-### Jev 输入分派（实验性）
+## Jev 输入分派
+
+实验性功能，需单独安装并配置 TypeSafe API key 和 Codex hook，详见 [安装说明](docs/jev-router.md#安装)。
 
 每条输入先由 `UserPromptSubmit` hook 让 Jev 判断 `simple_request` 和 `coding_task`，
 再用 `jev-dispatch STATE.json` 执行。简单请求由独立 Luna 直接完成并交付；不确定、
 失败或 API 异常交回当前会话。代码任务由当前会话补齐范围、上下文和实际 checks 后，
 复用状态执行，checks 失败即返回 current。复杂任务仍可由当前模型使用原生 Luna 子代理。
-默认 sandbox 是 `read-only`，明确授权写入时才使用 `workspace-write`。旧
+默认 sandbox 是 `read-only`，明确授权写入时才使用 `workspace-write`。
+
 统一设置入口：终端 `jev status` 查看总开关、输入路由、判断打印；`jev on/off`、
 `jev entry on/off`、`jev print on/off` 即时切换后续判断。
 需要完全停用 Codex hook 时运行 `jev-hook off`；`jev-hook on` 重新安装，`jev-hook status`
@@ -773,7 +692,7 @@ legacy，不推荐。入口不绕过 hooks trust、权限或审批。安装和�
 
 ## Claude Manager TUI
 
-⚠️ **注意**：TUI 方案仍在优化中，推荐优先使用 [方式一：Kitty 优化](#方式一kitty-优化-推荐快速开始) 进行日常开发。
+⚠️ **注意**：TUI 方案仍在优化中，推荐优先使用 [Kitty 增强](#快速开始) 进行日常开发。
 
 ### 启动方式
 
@@ -957,7 +876,14 @@ tail -f /tmp/claude-hook.log
 │   └── watch_logs.sh
 │
 ├── tools/
-│   └── ai-run                 # 按会话选择 skill / MCP
+│   ├── ai-run                  # 按会话选择 skill / MCP
+│   ├── jev / jev-hook           # Jev 开关与 Hook 管理
+│   ├── jev-dispatch / jev-execute # 输入分派与执行
+│   ├── jev-run                  # 委派任务登记、检查与审核
+│   └── jev-delegation/          # 手动调用的委派 skill
+│
+├── docs/
+│   └── jev-router.md            # Jev 安装与使用
 │
 ├── kitty-enhance/              # Kitty 优化工具集 ⭐
 │   ├── config/
@@ -973,10 +899,12 @@ tail -f /tmp/claude-hook.log
 │   │   ├── quick-rename-tab.sh
 │   │   ├── ai-tab-title-monitor.py # Tab 标题跟随 AI 窗口
 │   │   ├── codex-event-monitor.py  # Codex 会话事件监控
-│   │   ├── codex-working.sh        # Codex 工作中 Tab 变蓝
+│   │   ├── session-snapshot.py     # 保存 / 恢复 Kitty 会话
+│   │   ├── session-backup.py       # systemd 周期备份
+│   │   ├── codex-working.sh        # Codex 运行状态色
 │   │   └── codex-completed.sh      # Codex 完成 Tab 变红
 │   ├── hooks/                  # Claude Code Hooks
-│   │   ├── on-tool-use.sh      # 工具调用时 Tab 变蓝
+│   │   ├── on-tool-use.sh      # 工具调用时更新运行状态色
 │   │   ├── on-user-prompt.sh   # 提交 prompt 时登记任务摘要
 │   │   ├── on-stop.sh          # 完成时 Tab 变红 + 通知
 │   │   ├── on-notify.sh        # 通知处理
@@ -994,6 +922,7 @@ tail -f /tmp/claude-hook.log
 │   │   └── requirements.txt     # Python 依赖
 │   ├── shell-functions.sh      # Tab 管理 Shell 函数
 │   ├── install.sh              # 一键安装脚本
+│   ├── install-codex-yolo.sh    # Codex 独立启动器安装
 │   ├── uninstall.sh            # 卸载脚本
 │   ├── KITTY_SETUP.md          # 详细设置指南
 │   └── COLOR_SCHEME.md         # 颜色方案文档
