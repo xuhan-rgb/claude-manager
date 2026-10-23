@@ -38,7 +38,6 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
     [ -z "$TAB_INFO" ] && exit 0
 
     TAB_ID="${TAB_INFO%% *}"
-    WIN_FOCUSED="${TAB_INFO##* }"
 
     sf=$(_state_file "$KITTY_SOCKET" "$TAB_ID")
 
@@ -55,21 +54,14 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
             inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
         rm -f "$sf" "$_cache"
         debug "on-tool-use: cleared $current (user interacting)"
-        # 聚焦 tab 不需要蓝色
-        [ "$WIN_FOCUSED" = "1" ] && exit 0
-        # 非聚焦继续设蓝
         current=""
     ;; esac
 
-    # 聚焦 tab 不需要蓝色通知
-    [ "$WIN_FOCUSED" = "1" ] && exit 0
-
     case "$current" in blue) exit 0 ;; esac
 
-    # "none" = 刚被清除的红/黄，不应设蓝色，清理后退出
+    # 新的工具调用表明仍在工作，清理上一轮已读通知状态。
     if [ "$current" = "none" ]; then
         rm -f "$sf" "$_cache"
-        exit 0
     fi
 
     sleep 0.3
@@ -79,7 +71,6 @@ KITTY_SOCKET="${KITTY_LISTEN_ON:-unix:@mykitty}"
     case "$current" in red|yellow|none) exit 0 ;; esac
 
     set_tab_color "$KITTY_SOCKET" "$TAB_ID" "blue"
-    ensure_poller "$KITTY_SOCKET"
 
     # 终端注册（异步，在慢路径中执行，不影响性能）
     source "$(dirname "$(readlink -f "$0")")/feishu-register.sh"

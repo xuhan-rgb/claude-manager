@@ -24,7 +24,7 @@ _poller_pid_file() {
     echo "${STATE_DIR}/kitty-tab-poller-$(_socket_hash "$1").pid"
 }
 
-# 清理聚焦 tab 的颜色 + 恢复非聚焦的 blue-paused tab
+# 清理聚焦 tab 的通知颜色，并迁移旧版 blue-paused 状态
 cleanup_focused_tabs() {
     local socket="$1"
     local ls_json
@@ -53,31 +53,15 @@ for os_win in data:
         local color
         color=$(cat "$sf")
 
-        if [ "$kind" = "F" ]; then
-            # 聚焦 tab：蓝色暂停，红/黄清除
-            if [ "$color" = "blue" ]; then
-                debug "cleanup: tab $tid blue -> blue-paused"
-                kitty @ --to "$socket" set-tab-color --match "id:$tid" \
-                    active_bg=NONE active_fg=NONE \
-                    inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
-                echo "blue-paused" > "$sf"
-            elif [ "$color" != "blue-paused" ]; then
-                debug "cleanup: tab $tid focused (was $color), resetting"
-                kitty @ --to "$socket" set-tab-color --match "id:$tid" \
-                    active_bg=NONE active_fg=NONE \
-                    inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
-                # 写 "none" 而非删除，防止残留后台进程误设蓝色
-                echo "none" > "$sf"
-            fi
-        else
-            # 非聚焦 tab：恢复 blue-paused → blue
-            if [ "$color" = "blue-paused" ]; then
-                debug "restore: tab $tid blue-paused -> blue"
-                kitty @ --to "$socket" set-tab-color --match "id:$tid" \
-                    active_bg=#1E90FF active_fg=#FFFFFF \
-                    inactive_bg=#1565C0 inactive_fg=#FFFFFF 2>/dev/null || true
-                echo "blue" > "$sf"
-            fi
+        # Kitty 原生区分选中/未选中颜色；运行状态不随焦点清除。
+        if [ "$color" = "blue-paused" ]; then
+            set_tab_color "$socket" "$tid" blue
+        elif [ "$kind" = "F" ] && [ "$color" != "blue" ]; then
+            kitty @ --to "$socket" set-tab-color --match "id:$tid" \
+                active_bg=NONE active_fg=NONE \
+                inactive_bg=NONE inactive_fg=NONE 2>/dev/null || true
+            # 防止残留后台进程误设蓝色。
+            echo "none" > "$sf"
         fi
     done <<< "$tab_list"
 }
@@ -139,7 +123,7 @@ set_tab_color() {
             inactive_bg=#B8960C inactive_fg=#000000 2>/dev/null || true
     elif [ "$color_type" = "blue" ]; then
         kitty @ --to "$socket" set-tab-color --match "id:$tab_id" \
-            active_bg=#1E90FF active_fg=#FFFFFF \
+            active_bg=NONE active_fg=NONE \
             inactive_bg=#1565C0 inactive_fg=#FFFFFF 2>/dev/null || true
     fi
 
@@ -196,10 +180,12 @@ ensure_poller() {
             sleep 1
         done
 
-        # 超时清理所有状态文件
-        debug "poller: timeout, cleaning all"
+        # 超时只清理通知色；运行状态由完成事件清理
+        debug "poller: timeout, cleaning notification colors"
         for sf in "${STATE_DIR}"/kitty-tab-"${hash}"-*; do
             [ -f "$sf" ] || continue
+            read -r _v < "$sf"
+            case "$_v" in blue|blue-paused) continue ;; esac
             clear_tab_color_state "$sock" "${sf##*-}"
         done
         rm -f "$pid_f"

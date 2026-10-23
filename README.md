@@ -283,15 +283,15 @@ Claude Manager 集成了 Claude Code Hooks，自动管理 Tab 颜色显示任务
 
 **工作流程**：
 - **思考阶段**：白色（暂无专门 Hook）
-- `on-tool-use.sh`：调用工具时 → 蓝色（非聚焦显示）
+- `on-tool-use.sh`：调用工具时记录运行状态 → 选中为主题绿色，未选中为蓝色
 - `on-notify.sh`：需要确认时 → 黄色（权限对话框、输入确认等）
 - `on-stop.sh`：完成回答时 → 红色（非聚焦显示）
-- **自动恢复**：切换到该 Tab 后 3 秒自动恢复原色
+- **自动恢复**：红/黄通知色在聚焦后恢复原色；运行中的 Tab 由 Kitty 即时切换选中绿色、未选中蓝色
 
 **Codex 补充**：
 - 安装 `kitty-enhance` 后，Shell 会自动包一层 `codex` 命令
 - 这条链路是**独立实现**，不会改动现有 Claude Hook
-- Codex 开始处理时 → 蓝色；Codex 当前轮次完成时 → 红色
+- Codex 开始处理时 → 选中绿色、未选中蓝色；Codex 当前轮次完成时 → 红色
 - 目前 Codex 复用了同一套 Tab 恢复逻辑；Claude 的黄色确认通知保持原样
 - Tab 标题会同步成最近聚焦的 AI 窗口标题；Claude 提交 prompt 时会登记任务摘要，供 `work-status` 显示
 
@@ -313,6 +313,7 @@ codex-yolo resume --last
 ```
 
 安装到 `~/.local/bin/codex-yolo`，支持重复运行。完整 Kitty 安装也会尝试安装该命令。
+`bash kitty-enhance/install.sh --codex-only` 也会调用同一个独立安装脚本。
 安装器在 shell rc 末尾添加受管理的配置块，使旧的同名 alias/函数不再遮蔽新命令；
 首次修改前将原 rc 备份为 `.bashrc.before-codex-yolo` / `.zshrc.before-codex-yolo`。
 
@@ -349,6 +350,50 @@ codex-yolo resume --last
 | `tab-alert` | `ta` | 手动标记为红色 | `ta` |
 | `tab-warning` | - | 手动标记为黄色 | `tab-warning` |
 | `tab-done` | - | 手动标记为绿色 | `tab-done` |
+| `tab-save` | - | 立即保存，并默认每 10 分钟覆盖更新同一份快照 | `tab-save work` |
+| `tab-restore` | - | 在新 Kitty 窗口恢复保存的 Tab 和对话 | `tab-restore work` |
+| `tab-list` | - | 列出已保存的 Tab 快照 | `tab-list` |
+| `tab-backup` | - | 查看、停止周期任务，或恢复最近一份周期快照 | `tab-backup status` |
+
+`tab-save work` 会先保存一次，然后通过用户级 systemd timer 每 10 分钟更新
+`work.session` 和 `work.meta.json`，仅保留最新一份，不生成历史文件。
+不传名称时使用 `auto`。周期任务在后台执行，不占用执行命令的 Shell。
+首次更新命令后，在现有 Shell 中运行：
+
+```bash
+source /mnt/data/claude-manager/kitty-enhance/shell-functions.sh
+
+tab-save work                 # 立即保存，并每 10 分钟更新
+tab-save work --interval 30m  # 修改频率（支持 s、m、h）
+tab-save work --once          # 仅保存一次，不修改已有定时任务
+tab-backup status            # 查看下一次保存时间
+tab-backup stop              # 停止定时任务，保存文件保留
+tab-restore work             # 恢复这份快照
+tab-backup restore           # 恢复最近更新的周期快照
+```
+
+周期任务只备份执行 `tab-save` 时所在的 Kitty OS 窗口（包括全部 Tab），
+每个用户只有一个定时任务；再次运行 `tab-save` 会更新目标窗口、保存名称和周期。
+关闭目标 Kitty 窗口后，每轮检查跳过保存，保留最后一份快照和后台 timer。
+关闭某个 Shell 或 Tab 时，只要整个目标窗口仍在，其他 Tab 继续保存。
+重新打开 Kitty 后需再运行 `tab-save work` 绑定新窗口。
+这是当前用户登录会话中的 timer，不会配置开机自启。
+`tab-restore <name>` 和 `tab-backup restore` 在快照包含本地 Unix socket 的 Codex
+连接时，会先运行 `codex app-server daemon start`，成功后再启动 Kitty。重启电脑后
+无需手动先启动 daemon；启动失败时会报错并取消恢复。
+后台保存结果和错误可通过
+`journalctl --user -u kitty-tab-backup.service -n 20 --no-pager` 查看。
+保存时会汇总缺失对话 ID 的提示，这类窗口无法保证恢复到原对话。
+
+`tab-save work` 会把可恢复的对话写入 `~/.config/kitty-enhance/sessions/work.session`，
+恢复时使用 `claude --resume <session-id>` 或 `codex resume <session-id>`。
+保存前请至少发送一条消息，让对话日志落盘；旧快照需要重新保存才能补入会话 ID。
+Claude 按 PID 读取会话记录；普通 Codex 读取该进程打开的会话日志。
+本地 Unix socket 的 Codex daemon 模式优先用窗口标题匹配本地会话索引中的名称，
+仅在名称与目录唯一对应、且对话日志存在时保存 ID；未匹配到名称时，再检查工作目录
+唯一对应的已加载日志。同目录同名的多个候选不会猜测 ID。找不到 ID 会输出
+`no session-id, fresh restore`，
+此时保留启动命令，无法保证恢复到原对话。远程网络 daemon 的会话识别尚未支持。
 
 **使用示例**：
 ```bash
@@ -707,6 +752,22 @@ python3 tools/ai-run claude --skills agent-reach,tdd --mcp none
 python3 tools/ai-run claude --skills none --mcp none --yolo
 python3 tools/ai-run codex --skills brainstorming --mcp openaiDeveloperDocs -- --model gpt-5.6-sol
 ```
+
+### Jev 输入分派（实验性）
+
+每条输入先由 `UserPromptSubmit` hook 让 Jev 判断 `simple_request` 和 `coding_task`，
+再用 `jev-dispatch STATE.json` 执行。简单请求由独立 Luna 直接完成并交付；不确定、
+失败或 API 异常交回当前会话。代码任务由当前会话补齐范围、上下文和实际 checks 后，
+复用状态执行，checks 失败即返回 current。复杂任务仍可由当前模型使用原生 Luna 子代理。
+默认 sandbox 是 `read-only`，明确授权写入时才使用 `workspace-write`。旧
+统一设置入口：终端 `jev status` 查看总开关、输入路由、判断打印；`jev on/off`、
+`jev entry on/off`、`jev print on/off` 即时切换后续判断。
+需要完全停用 Codex hook 时运行 `jev-hook off`；`jev-hook on` 重新安装，`jev-hook status`
+查看实际安装状态。详细规则通过 `jev-delegation` skill 手动调用，不写入全局 `AGENTS.md`。
+当前模型委派子任务仍通过 `jev-run register/check/verify` 判断是否需要主模型审核。
+`jev-execute` 独立简单入口免模型审核，`--parent-run` 委派路径保留审核；旧 `jev-chat` 只作
+legacy，不推荐。入口不绕过 hooks trust、权限或审批。安装和使用见
+[Jev 输入分派说明](docs/jev-router.md)。
 
 ---
 

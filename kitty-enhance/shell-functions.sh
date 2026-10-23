@@ -253,77 +253,9 @@ _tab_session_dir() {
     echo "${KITTY_ENHANCE_SESSION_DIR:-$HOME/.config/kitty-enhance/sessions}"
 }
 
-_tab_snapshot_script() {
-    echo "${_KITTY_ENHANCE_DIR}/scripts/session-snapshot.py"
-}
-
-# 保存当前 Kitty 全部 Tab
+# 立即保存当前 Kitty 窗口，并默认周期覆盖同一份快照。
 tab-save() {
-    local name="${1:-}"
-    if [ -z "$name" ]; then
-        echo "用法: tab-save <name>"
-        echo "示例: tab-save work"
-        return 1
-    fi
-
-    if [ -z "${KITTY_WINDOW_ID:-}" ]; then
-        echo "错误: 不在 Kitty 终端中"
-        return 1
-    fi
-
-    local dir
-    dir="$(_tab_session_dir)"
-    mkdir -p "$dir"
-
-    local session_file="$dir/${name}.session"
-    local meta_file="$dir/${name}.meta.json"
-    local snapshot_script
-    snapshot_script="$(_tab_snapshot_script)"
-
-    if [ ! -f "$snapshot_script" ]; then
-        echo "错误: 找不到 session-snapshot.py: $snapshot_script"
-        return 1
-    fi
-
-    local kitty_json
-    kitty_json=$(kitty @ --to "$(_kitty_socket)" ls 2>/dev/null)
-    if [ $? -ne 0 ] || [ -z "$kitty_json" ]; then
-        echo "错误: kitty @ ls 失败（需要 allow_remote_control yes）"
-        return 1
-    fi
-
-    local overwrite=""
-    if [ -f "$session_file" ]; then
-        overwrite=" (覆盖)"
-    fi
-
-    echo "$kitty_json" | python3 "$snapshot_script" "$name" > "$session_file"
-    if [ $? -ne 0 ]; then
-        echo "错误: 生成 session 文件失败"
-        rm -f "$session_file"
-        return 1
-    fi
-
-    local tab_count
-    tab_count=$(grep -c 'new_tab' "$session_file")
-    echo "$kitty_json" | python3 -c "
-import json, sys
-from datetime import datetime
-data = json.load(sys.stdin)
-tabs = data[0]['tabs']
-windows = sum(len(t['windows']) for t in tabs)
-meta = {
-    'name': sys.argv[1],
-    'saved_at': datetime.now().isoformat(timespec='seconds'),
-    'tabs': len(tabs),
-    'windows': windows,
-}
-json.dump(meta, sys.stdout, ensure_ascii=False, indent=2)
-print()
-" "$name" > "$meta_file"
-
-    echo "已保存${overwrite}: $name ($tab_count tabs)"
-    echo "  文件: $session_file"
+    python3 "${_KITTY_ENHANCE_DIR}/scripts/session-backup.py" start "$@"
 }
 
 # 恢复 Kitty Tab 会话
@@ -344,8 +276,7 @@ tab-restore() {
         return 1
     fi
 
-    kitty --session "$session_file" --detach
-    echo "已恢复: $name (新 Kitty 窗口)"
+    python3 "${_KITTY_ENHANCE_DIR}/scripts/session-backup.py" restore --session-file "$session_file"
 }
 
 # 列出所有已保存的 Tab 会话
@@ -393,6 +324,11 @@ tab-delete() {
     echo "已删除: $name"
 }
 
+# 当前 Kitty 窗口的周期备份（用户级 systemd timer）
+tab-backup() {
+    python3 "${_KITTY_ENHANCE_DIR}/scripts/session-backup.py" "$@"
+}
+
 # 帮助信息
 tab-help() {
     cat <<'HELP'
@@ -411,10 +347,14 @@ Kitty Tab 管理命令 (kitty-enhance)
     tab-reset             重置颜色
 
   Session 管理:
-    tab-save <name>       保存所有 Tab 状态
+    tab-save [name] [--interval 10m]  立即保存并周期更新（默认名称 auto）
+    tab-save <name> --once 保存一次，不修改已有周期任务
     tab-restore <name>    恢复 Tab（新 Kitty 窗口）
     tab-list              列出已保存的 session
     tab-delete <name>     删除 session
+    tab-backup status     查看下一次备份时间
+    tab-backup stop       停止周期备份
+    tab-backup restore    恢复最近一次自动备份
 
   工作进度监控:
     work-status, ws                    打开工作状态 GUI（按工程查看任务）
